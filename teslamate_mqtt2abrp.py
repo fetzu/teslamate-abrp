@@ -270,7 +270,7 @@ while True:
         if "kwh_charged" in data:
             del data["kwh_charged"]
         if(i%30==0 or i>30):
-            print("Car is " + state + ", updating every 30s.")
+            print("Car is parked, updating every 30s.")
             print("Data object sent:", data)
             updateABRP()
             i = 0
