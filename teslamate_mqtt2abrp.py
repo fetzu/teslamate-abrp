@@ -25,11 +25,12 @@ TeslaMate MQTT to ABRP
 ## [ IMPORTS ]
 import sys
 import datetime
+import time
 import calendar
 import os
-from time import sleep
 import paho.mqtt.client as mqtt
 import requests
+from time import sleep
 from docopt import docopt
 
 # Needed to intitialize docopt (for CLI)
@@ -263,29 +264,33 @@ while True:
     #print(state)
     if state != prev_state:
         i = 30
-    current_datetime = datetime.datetime.utcnow()
+    now = datetime.datetime
+    current_datetime = now.utcnow()
     current_timetuple = current_datetime.utctimetuple()
     data["utc"] = calendar.timegm(current_timetuple) #utc timestamp must be in every message
+    
+    str_now = time.strftime("%Y-%m-%d %H:%M:%S")
+    msg = str_now + ": Car is " + state
+    msgDetails = "Data object sent:"
     if(state == "parked" or state == "online" or state == "suspended" or state=="asleep" or state=="offline"): #if parked, update every 30 cylces/seconds
         if "kwh_charged" in data:
             del data["kwh_charged"]
         if(i%30==0 or i>30):
-            print("Car is parked, updating every 30s.")
-            print("Data object sent:", data)
+            print(msg + ", updating every 30s.")
+            print(msgDetails, data)
             updateABRP()
             i = 0
     elif state == "charging": #if charging, update every 6 cycles/seconds
         if i%6==0:
-            print("Car is charging, updating every 6s.")
-            print("Data object sent:", data)
+            print(msg +", updating every 6s.")
+            print(msgDetails, data)
             updateABRP()
     elif state == "driving": #if driving, update every cycle/second
-        print("Car is driving, updating every second.")
-        print("Data object sent:", data)
+        print(msg + ", updating every second.")
+        print(msgDetails, data)
         updateABRP()
     else:
-        print("Car in unknown state, not sending any update to ABRP.")
-        print(state)
+        print(msg + " (unknown state), not sending any update to ABRP.")
     prev_state = state
 
 client.loop_stop()
