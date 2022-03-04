@@ -25,7 +25,6 @@ TeslaMate MQTT to ABRP
 ## [ IMPORTS ]
 import sys
 import datetime
-import time
 import calendar
 import os
 from time import sleep
@@ -264,33 +263,29 @@ while True:
     #print(state)
     if state != prev_state:
         i = 30
-    now = datetime.datetime
-    current_datetime = now.utcnow()
+    current_datetime = datetime.datetime.utcnow()
     current_timetuple = current_datetime.utctimetuple()
     data["utc"] = calendar.timegm(current_timetuple) #utc timestamp must be in every message
-    
-    str_now = time.strftime("%Y-%m-%d %H:%M:%S")
-    msg = "Car is " + state
-    msgDetails = "Data object sent:"
     if(state == "parked" or state == "online" or state == "suspended" or state=="asleep" or state=="offline"): #if parked, update every 30 cylces/seconds
         if "kwh_charged" in data:
             del data["kwh_charged"]
         if(i%30==0 or i>30):
-            print(msg + ", updating every 30s.")
-            print(msgDetails, data)
+            print("Car is " + state + ", updating every 30s.")
+            print("Data object sent:", data)
             updateABRP()
             i = 0
     elif state == "charging": #if charging, update every 6 cycles/seconds
         if i%6==0:
-            print(msg +", updating every 6s.")
-            print(msgDetails, data)
+            print("Car is charging, updating every 6s.")
+            print("Data object sent:", data)
             updateABRP()
     elif state == "driving": #if driving, update every cycle/second
-        print(msg + ", updating every second.")
-        print(msgDetails, data)
+        print("Car is driving, updating every second.")
+        print("Data object sent:", data)
         updateABRP()
     else:
-        print(msg + ", (unknown state)", not sending any update to ABRP.")
+        print("Car in unknown state, not sending any update to ABRP.")
+        print(state)
     prev_state = state
 
 client.loop_stop()
