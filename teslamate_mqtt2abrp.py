@@ -290,7 +290,7 @@ while True:
         print(msgDetails, data)
         updateABRP()
     else:
-        print(msg + " (unknown state), not sending any update to ABRP.")
+        print(msg + ", (unknown state), not sending any update to ABRP.")
     prev_state = state
 
 client.loop_stop()
