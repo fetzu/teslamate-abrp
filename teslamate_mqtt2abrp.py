@@ -269,7 +269,7 @@ while True:
     current_timetuple = current_datetime.utctimetuple()
     data["utc"] = calendar.timegm(current_timetuple) #utc timestamp must be in every message
     
-    str_now = time.strftime("%Y-%m-%d %H:%M:%S")
+    str_now = current_datetime.strftime("%Y-%m-%d %H:%M:%S")
     msg = str_now + ": Car is " + state
     msgDetails = "Data object sent:"
     if(state == "parked" or state == "online" or state == "suspended" or state=="asleep" or state=="offline"): #if parked, update every 30 cylces/seconds
