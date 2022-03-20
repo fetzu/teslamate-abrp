@@ -1,6 +1,5 @@
 ## [ CLI with docopt ]
-"""
-TeslaMate MQTT to ABRP
+"""TeslaMate MQTT to ABRP
 
 Usage: 
     teslamate_mqtt2abrp.py [-hlap] [USER_TOKEN] [CAR_NUMBER] [MQTT_SERVER] [MQTT_USERNAME] [MQTT_PASSWORD] [-m CAR_MODEL]
