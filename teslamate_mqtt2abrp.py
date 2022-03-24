@@ -152,7 +152,7 @@ def on_message(client, userdata, message):
         elif topic_postfix == "ideal_battery_range_km":
             data["ideal_battery_range"] = payload
         elif topic_postfix == "est_battery_range_km":
-            data["battery_range"] = payload
+            data["est_battery_range"] = payload
         elif topic_postfix == "charger_actual_current":
             if(payload!='' and int(payload) > 0): #charging, include current in message
                 data["current"] = payload
