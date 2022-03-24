@@ -81,7 +81,7 @@ data = { #dictionary of values sent to ABRP API
     "is_charging": 0,
     "is_dcfc": 0,
     "is_parked": 0,
-    "battery_range": "",
+    "est_battery_range": "",
     "ideal_battery_range": "",
     "ext_temp": "",
     "model": "",
