@@ -81,7 +81,7 @@ data = { #dictionary of values sent to ABRP API
     "is_charging": 0,
     "is_dcfc": 0,
     "is_parked": 0,
-    "battery_range": "",
+    "est_battery_range": "",
     "ideal_battery_range": "",
     "ext_temp": "",
     "model": "",
@@ -152,7 +152,7 @@ def on_message(client, userdata, message):
         elif topic_postfix == "ideal_battery_range_km":
             data["ideal_battery_range"] = payload
         elif topic_postfix == "est_battery_range_km":
-            data["battery_range"] = payload
+            data["est_battery_range"] = payload
         elif topic_postfix == "charger_actual_current":
             if(payload!='' and int(payload) > 0): #charging, include current in message
                 data["current"] = payload
@@ -268,7 +268,7 @@ while True:
     current_timetuple = current_datetime.utctimetuple()
     data["utc"] = calendar.timegm(current_timetuple) #utc timestamp must be in every message
     
-    str_now = time.strftime("%Y-%m-%d %H:%M:%S")
+    str_now = current_datetime.strftime("%Y-%m-%d %H:%M:%S")
     msg = str_now + ": Car is " + state
     msgDetails = "Data object sent:"
     if(state == "parked" or state == "online" or state == "suspended" or state=="asleep" or state=="offline"): #if parked, update every 30 cylces/seconds
