@@ -110,7 +110,14 @@ if MQTTUSERNAME is not None:
 client.connect(MQTTSERVER)
 
 def on_connect(client, userdata, flags, rc):  # The callback for when the client connects to the broker
-    print("Connected with result code {0}".format(str(rc)))  # Print result of connection attempt
+    # MQTT Error handling
+    if rc = 0: print("Connected with result code {0}. Connection with MQTT server established.".format(str(rc)))
+    elif rc = 1: sys.exit("Connection to MQTT server refused: invalid protocol version.")
+    elif rc = 2: sys.exit("Connection to MQTT server refused: invalid client identifier.")
+    elif rc = 3: sys.exit("Connection to MQTT server refused: server unavailable.")
+    elif rc = 4: sys.exit("Connection to MQTT server refused: bad username or password. Check your credentials.")
+    elif rc = 5: sys.exit("Connection to MQTT server refused: not authorised. Provide username and password as needed.")
+    elif rc >= 6 and rc <= 255: sys.exit("Connection to MQTT server refused: unknown reason. Seems like you are really unlucky today :(.")
     client.subscribe(f"teslamate/cars/{CARNUMBER}/#")
 
 # Process MQTT messages
