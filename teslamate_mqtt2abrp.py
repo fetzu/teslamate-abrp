@@ -43,28 +43,31 @@ MQTTPASSWORD = None
 
 if (arguments['-l'] is True or arguments['-a'] is True) and arguments['MQTT_USERNAME'] is not None: 
     MQTTUSERNAME = arguments['MQTT_USERNAME']
-else: MQTTUSERNAME = os.environ['MQTT_USERNAME']
+elif 'MQTT_USERNAME' in os.environ: MQTTUSERNAME = os.environ['MQTT_USERNAME']
 
 if arguments['-a'] is True and arguments['MQTT_PASSWORD'] is not None:
     MQTTPASSWORD = arguments['MQTT_PASSWORD']
-else: 
-    MQTTPASSWORD = os.environ['MQTT_PASSWORD']
+elif 'MQTT_PASSWORD' in os.environ: MQTTPASSWORD = os.environ['MQTT_PASSWORD']
 
 if arguments['MQTT_SERVER'] is None: MQTTSERVER = os.environ['MQTT_SERVER']
-else: MQTTSERVER = arguments['MQTT_SERVER']
+elif 'MQTT_SERVER' in os.environ: MQTTSERVER = arguments['MQTT_SERVER']
+else: print("You need to supply a MQTT server address.")
 
 if arguments['USER_TOKEN'] is None: USERTOKEN = os.environ['USER_TOKEN']
-else: USERTOKEN = arguments['USER_TOKEN']
+elif 'USER_TOKEN' in os.environ: USERTOKEN = arguments['USER_TOKEN']
+else: print("You need to supply a user token for ABRP.")
 
 if arguments['CAR_NUMBER'] is None: CARNUMBER = os.environ['CAR_NUMBER']
-else: CARNUMBER = arguments['CAR_NUMBER']
+elif 'CAR_NUMBER' in os.environ: CARNUMBER = arguments['CAR_NUMBER']
+else:
+    CARNUMBER = 1
+    print("Car number not supplied, defaulting to 1.")
 
 print(arguments)
 if arguments['--model'] is None: 
     if "CAR_MODEL" in os.environ: CARMODEL = os.environ["CAR_MODEL"]
     else: CARMODEL = None
 else: CARMODEL = arguments['--model']
-print(CARMODEL)
 
 ## [ VARS ]
 state = "" #car state
@@ -236,6 +239,7 @@ def findCarModel():
 
 # If the car model is not yet known, find it
 if CARMODEL is None: findCarModel()
+else: print("Car model manually set to: "+CARMODEL)
 
 ## [ ABRP ]
 # Function to send data to ABRP
