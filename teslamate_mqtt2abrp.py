@@ -229,22 +229,34 @@ def findCarModel():
     if data["model"] == "3":
         if data["trim_badging"] == "50":
             data["car_model"] = "3standard"
+        elif data["trim_badging"] == "62":
+            data["car_model"] = "3mid"
         elif data["trim_badging"] == "74":
             data["car_model"] = "3long"
         elif data["trim_badging"] == "74D":
             data["car_model"] = "3long_awd"
         elif data["trim_badging"] == "P74D":
             data["car_model"] = "3p20"
+        else:
+            print("Your Model 3 trim could not be automatically determined. Trim reported as: "+data["trim_badging"])
+            return
     
-    # TODO: Handle model Y cases
+    # Handle model Y cases
     if data["model"] == "Y":
-        print("Unfortunately, Model Y is not supported yet and should be set through the CLI or environment var.")
+        if data["trim_badging"] == "74D":
+            data["car_model"] = "tesla:my:19:bt37:awd"
+        elif data["trim_badging"] == "P74D":
+            data["car_model"] = "tesla:my:19:bt37:perf"
+        else:
+            print("Your Model Y trim could not be automatically determined. Trim reported as: "+data["trim_badging"])
+            return
 
     # Handle simple cases (aka Model S and Model X)
     else: data["car_model"] = data["model"].lower()+""+data["trim_badging"].lower()
 
     # Log the determined car model to the console
-    print("Car model automatically determined as: "+data["car_model"])
+    if data["car_model"] is not None: print("Car model automatically determined as: "+data["car_model"])
+    else: print("Car model could not be automatically determined, please set it through the CLI or environment var according to the documentation for best results.")
 
 # If the car model is not yet known, find it
 if CARMODEL is None: findCarModel()
