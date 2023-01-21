@@ -274,8 +274,8 @@ def updateABRP():
         requests.post("https://api.iternio.com/1/tlm/send?token="+USERTOKEN, headers=headers, json=body)
     except:
         print("Unexpected exception while calling ABRP API:", sys.exc_info()[0])
-        print(message.topic)
-        print(message.payload)
+        #print(message.topic)
+        #print(message.payload)
 
 ## [ MAIN ]
 

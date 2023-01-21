@@ -22,6 +22,8 @@ ABRP:
   container_name: TeslaMate_ABRP
   image: fetzu/teslamate-abrp:latest
   restart: always
+  # privileged: true
+  # NOTE: un-comment the previous line to run the container in privilege mode (necessary on RaspberryPi)
   environment:
     - MQTT_SERVER=mosquitto
     - USER_TOKEN=y0ur-4p1-k3y
@@ -39,7 +41,7 @@ Make sure to adapt the following environment variables:
 Then from the command line, navigate to the folder where your docker-compose.yml is located and run:
 ```
 docker-compose pull ABRP
-docker-compose up ABRP -d
+docker-compose up -d ABRP
 ```
   
 If all goes well, your car should be shown as online in ABRP after a minute. The logs should  show "Connected with result code 0".
