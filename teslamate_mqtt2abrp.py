@@ -289,20 +289,8 @@ def updateABRP():
         #print(message.topic)
         #print(message.payload)
         print(ex)
-
-## [ Procces Telemetry ]
-# Function to check previous data sent in order to send only if data changed
-def isDataChanged():
-    global prev_data
-    global data
-    t_data = data.copy()
-    t_prev = prev_data.copy()
-    del t_data["utc"]
-    del t_prev["utc"]
-    return json.dumps(t_data) != json.dumps(t_prev)
     
 ## [ MAIN ]
-
 # Starts the forever loop updating ABRP
 i = -1
 while True:
