@@ -74,20 +74,21 @@ else: CARMODEL = arguments['--model']
 ## [ VARS ]
 state = "" #car state
 prev_state = "" #car state previous loop for tracking
+charger_phases = 1
 data = { #dictionary of values sent to ABRP API
     "utc": 0,
     "soc": 0,
     "power": 0,
     "speed": 0,
-    "lat": "",
-    "lon": "",
-    "elevation": "",
-    "is_charging": 0,
-    "is_dcfc": 0,
-    "is_parked": 0,
-    "est_battery_range": "",
-    "ideal_battery_range": "",
-    "ext_temp": "",
+    "lat": 0,
+    "lon": 0,
+    "elevation": 0,
+    "is_charging": False,
+    "is_dcfc": False,
+    "is_parked": False,
+    "est_battery_range": 0,
+    "ideal_battery_range": 0,
+    "ext_temp": 0,
     "model": "",
     "trim_badging": "",
     "car_model":f"{CARMODEL}",
@@ -95,7 +96,7 @@ data = { #dictionary of values sent to ABRP API
     "voltage": 0,
     "current": 0,
     "kwh_charged": 0,
-    "heading": "",
+    "heading": 0
 }
 
 ## [ MQTT ]
@@ -124,6 +125,7 @@ def on_connect(client, userdata, flags, rc):  # The callback for when the client
 def on_message(client, userdata, message):
     global data
     global state
+    global charger_phases
     try:
         #extracts message data from the received message
         payload = str(message.payload.decode("utf-8"))
@@ -138,71 +140,73 @@ def on_message(client, userdata, message):
         elif topic_postfix == "trim_badging":
             data["trim_badging"] = payload
         elif topic_postfix == "latitude":
-            data["lat"] = payload
+            data["lat"] = float(payload)
         elif topic_postfix == "longitude":
-            data["lon"] = payload
+            data["lon"] = float(payload)
         elif topic_postfix == "elevation":
-            data["elevation"] = payload
+            data["elevation"] = int(payload)
         elif topic_postfix == "speed":
             data["speed"] = int(payload)
         elif topic_postfix == "power":
-            data["power"] = int(payload)
-            if(data["is_charging"]==1 and int(payload)<-22):
-                data["is_dcfc"]=1
+            data["power"] = float(payload)
+            if(data["is_charging"]==True and int(payload)<-11):
+                data["is_dcfc"]=True
         elif topic_postfix == "charger_power":
             if(payload!='' and int(payload)!=0):
-                data["is_charging"]=1
-                if int(payload)>22:
-                    data["is_dcfc"]=1
+                data["is_charging"]=True
+                if int(payload)>11:
+                    data["is_dcfc"]=True
         elif topic_postfix == "heading":
-            data["heading"] = payload
+            data["heading"] = int(payload)
         elif topic_postfix == "outside_temp":
-            data["ext_temp"] = payload
+            data["ext_temp"] = float(payload)
         elif topic_postfix == "odometer":
-            data["odometer"] = payload
+            data["odometer"] = float(payload)
         elif topic_postfix == "ideal_battery_range_km":
-            data["ideal_battery_range"] = payload
+            data["ideal_battery_range"] = float(payload)
         elif topic_postfix == "est_battery_range_km":
-            data["est_battery_range"] = payload
+            data["est_battery_range"] = float(payload)
         elif topic_postfix == "charger_actual_current":
             if(payload!='' and int(payload) > 0): #charging, include current in message
-                data["current"] = payload
+                data["current"] = int(payload)
             else:
                 data["current"] = 0
                 del data["current"]
         elif topic_postfix == "charger_voltage":
             if(payload!='' and int(payload) > 5): #charging, include voltage in message
-                data["voltage"] = payload
+                data["voltage"] = int(payload)
             else:
                 data["voltage"] = 0
                 del data["voltage"]
         elif topic_postfix == "shift_state":
             if payload == "P":
-                data["is_parked"]="1"
+                data["is_parked"]=True
             elif(payload == "D" or payload == "R"):
-                data["is_parked"]="0"
+                data["is_parked"]=False
         elif topic_postfix == "state":
             state = payload
             if payload=="driving":
-                data["is_parked"]=0
-                data["is_charging"]=0
-                data["is_dcfc"]=0
+                data["is_parked"]=False
+                data["is_charging"]=False
+                data["is_dcfc"]=False
             elif payload=="charging":
-                data["is_parked"]=1
-                data["is_charging"]=1
-                data["is_dcfc"]=0
+                data["is_parked"]=True
+                data["is_charging"]=True
+                data["is_dcfc"]=False
             elif payload=="supercharging":
-                data["is_parked"]=1
-                data["is_charging"]=1
-                data["is_dcfc"]=1
+                data["is_parked"]=True
+                data["is_charging"]=True
+                data["is_dcfc"]=True
             elif(payload=="online" or payload=="suspended" or payload=="asleep"):
-                data["is_parked"]=1
-                data["is_charging"]=0
-                data["is_dcfc"]=0
+                data["is_parked"]=True
+                data["is_charging"]=False
+                data["is_dcfc"]=False
         elif topic_postfix == "usable_battery_level": #State of Charge of the vehicle (what's displayed on the dashboard of the vehicle is preferred)
-            data["soc"] = payload
+            data["soc"] = int(payload)
         elif topic_postfix == "charge_energy_added":
-            data["kwh_charged"] = payload
+            data["kwh_charged"] = float(payload)
+        elif topic_postfix == "charger_phases":
+            charger_phases = 3 if int(payload) > 1 else 1
         elif topic_postfix == "inside_temp":
             a=0 #Volontarely ignored
         elif topic_postfix == "since":
@@ -210,6 +214,11 @@ def on_message(client, userdata, message):
         else:
             pass
             #print("Unneeded topic:", message.topic, payload)
+
+        # Calculate acurrate power on AC charging
+        if data["power"] != 0.0 and data["is_charging"] == True and "voltage" in data and "current" in data:
+            data["power"] = float(data["current"] * data["voltage"] * charger_phases) / 1000.0 * -1
+
         return
 
     except:
@@ -271,12 +280,27 @@ def updateABRP():
     try:
         headers = {"Authorization": "APIKEY "+APIKEY}
         body = {"tlm": data}
-        requests.post("https://api.iternio.com/1/tlm/send?token="+USERTOKEN, headers=headers, json=body)
-    except:
+        response = requests.post("https://api.iternio.com/1/tlm/send?token="+USERTOKEN, headers=headers, json=body)
+        resp = response.json()
+        if resp["status"] != "ok":
+            print("Response from ABRP:", response.text)
+    except Exception as ex:
         print("Unexpected exception while calling ABRP API:", sys.exc_info()[0])
         #print(message.topic)
         #print(message.payload)
+        print(ex)
 
+## [ Procces Telemetry ]
+# Function to check previous data sent in order to send only if data changed
+def isDataChanged():
+    global prev_data
+    global data
+    t_data = data.copy()
+    t_prev = prev_data.copy()
+    del t_data["utc"]
+    del t_prev["utc"]
+    return json.dumps(t_data) != json.dumps(t_prev)
+    
 ## [ MAIN ]
 
 # Starts the forever loop updating ABRP
