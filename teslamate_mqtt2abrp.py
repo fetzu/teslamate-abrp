@@ -286,8 +286,6 @@ def updateABRP():
             print("Response from ABRP:", response.text)
     except Exception as ex:
         print("Unexpected exception while calling ABRP API:", sys.exc_info()[0])
-        #print(message.topic)
-        #print(message.payload)
         print(ex)
     
 ## [ MAIN ]
