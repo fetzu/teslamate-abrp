@@ -256,6 +256,8 @@ def findCarModel():
             data["car_model"] = "tesla:my:19:bt37:awd"
         elif data["trim_badging"] == "P74D":
             data["car_model"] = "tesla:my:19:bt37:perf"
+        elif data["trim_badging"] == "50":
+            data["car_model"] = "tesla:my:22:my_lfp:rwd"
         else:
             print("Your Model Y trim could not be automatically determined. Trim reported as: "+data["trim_badging"])
             return
