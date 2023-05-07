@@ -89,6 +89,7 @@ data = { #dictionary of values sent to ABRP API
     "est_battery_range": 0,
     "ideal_battery_range": 0,
     "ext_temp": 0,
+    "int_temp": 0,
     "model": "",
     "trim_badging": "",
     "car_model":f"{CARMODEL}",
@@ -208,7 +209,7 @@ def on_message(client, userdata, message):
         elif topic_postfix == "charger_phases":
             charger_phases = 3 if int(payload) > 1 else 1
         elif topic_postfix == "inside_temp":
-            a=0 #Volontarely ignored
+            data["int_temp"] = float(payload)
         elif topic_postfix == "since":
             a=0 #Volontarely ignored
         else:
