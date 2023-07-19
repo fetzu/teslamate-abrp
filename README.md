@@ -60,7 +60,7 @@ pip install -r requirements.txt
 
 To run, you can either use the CLI. Please note that USER_TOKEN, CAR_NUMBER, CAR_MODEL and MQTT_SERVER are required arguments.  
   
-If you are using a MQTT server with username or authentication, pass the -l (to use MQTT_USERNAME only) or -a (for authentication with MQTT_USERNAME and MQTT_PASSWORD) options.
+If you are using a MQTT server with username or authentication, pass the -l (to use MQTT_USERNAME only) or -a (for authentication with MQTT_USERNAME and MQTT_PASSWORD) options. [Be aware that passing a username and password on an MQTT server not set for it will cause the connection to fail](https://github.com/fetzu/teslamate-abrp/issues/25).
 
   
 ```
