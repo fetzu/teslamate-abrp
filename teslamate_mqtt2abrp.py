@@ -24,7 +24,6 @@ Note:
 ## [ IMPORTS ]
 import sys
 import datetime
-import time
 import calendar
 import os
 import paho.mqtt.client as mqtt
@@ -299,9 +298,8 @@ while True:
     #print(state)
     if state != prev_state:
         i = 30
-    now = datetime.datetime
-    current_datetime = now.utcnow()
-    current_timetuple = current_datetime.utctimetuple()
+    current_datetime = datetime.datetime.now(datetime.UTC)
+    current_timetuple = current_datetime.timetuple()
     data["utc"] = calendar.timegm(current_timetuple) #utc timestamp must be in every message
     
     str_now = current_datetime.strftime("%Y-%m-%d %H:%M:%S")
