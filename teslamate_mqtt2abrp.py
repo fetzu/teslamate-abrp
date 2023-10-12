@@ -280,20 +280,16 @@ def updateABRP():
     global APIKEY
     global USERTOKEN
 
-    # Convert the dictionary to a correct formatted JSON string
-    json_data = json.dumps(data)
-
-    # Now, json_string contains the JSON representation of the 'data' dictionary
     msgDetails = "Data object to send:"
-    print(msgDetails, json_data)
+    print(msgDetails, data)
 
     try:
         headers = {"Authorization": "APIKEY "+APIKEY}
-        body = {"tlm": json_data}
-        response = requests.post("https://api.iternio.com/1/tlm/send?token="+USERTOKEN, headers=headers, json=json.dumps(body))
-        #resp = response.json()
-        #if resp["status"] != "ok":
-        print("Response from ABRP:", response.text)
+        body = {"tlm": data}
+        response = requests.post("https://api.iternio.com/1/tlm/send?token="+USERTOKEN, headers=headers, json=body)
+        resp = response.json()
+        if resp["status"] != "ok":
+            print("Response from ABRP:", response.text)
     except Exception as ex:
         print("Unexpected exception while calling ABRP API:", sys.exc_info()[0])
         print(ex)
