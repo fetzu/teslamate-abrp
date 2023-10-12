@@ -290,6 +290,8 @@ def updateABRP():
         resp = response.json()
         if resp["status"] != "ok":
             print("Response from ABRP:", response.text)
+        else:
+            print("Response from ABRP:", resp["status"])
     except Exception as ex:
         print("Unexpected exception while calling ABRP API:", sys.exc_info()[0])
         print(ex)
