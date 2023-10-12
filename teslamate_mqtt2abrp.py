@@ -289,11 +289,13 @@ def updateABRP():
 
     try:
         headers = {"Authorization": "APIKEY "+APIKEY}
-        body = {"tlm": data}
+        body = {"tlm": json_data}
         response = requests.post("https://api.iternio.com/1/tlm/send?token="+USERTOKEN, headers=headers, json=body)
         resp = response.json()
         if resp["status"] != "ok":
             print("Response from ABRP:", response.text)
+    except json.JSONDecodeError as e:
+        print("JSON decode error:", e)
     except Exception as ex:
         print("Unexpected exception while calling ABRP API:", sys.exc_info()[0])
         print(ex)
