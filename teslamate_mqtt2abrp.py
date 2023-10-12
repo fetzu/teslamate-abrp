@@ -290,7 +290,7 @@ def updateABRP():
     try:
         headers = {"Authorization": "APIKEY "+APIKEY}
         body = {"tlm": json_data}
-        response = requests.post("https://api.iternio.com/1/tlm/send?token="+USERTOKEN, headers=headers, json=body)
+        response = requests.post("https://api.iternio.com/1/tlm/send?token="+USERTOKEN, headers=headers, json=json.dumps(body))
         #resp = response.json()
         #if resp["status"] != "ok":
         print("Response from ABRP:", response.text)
