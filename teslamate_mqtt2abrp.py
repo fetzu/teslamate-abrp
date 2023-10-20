@@ -280,7 +280,7 @@ def updateABRP():
     global APIKEY
     global USERTOKEN
 
-    # Convert the dictionary to a correct formatted JSON string
+    # Convert the dictionary to a JSON string
     json_data = json.dumps(data)
 
     # Now, json_string contains the JSON representation of the 'data' dictionary
@@ -313,8 +313,8 @@ while True:
     str_now = current_datetime.strftime("%Y-%m-%d %H:%M:%S")
     msg = str_now + ": Car is " + state
     if(state == "parked" or state == "online" or state == "suspended" or state=="asleep" or state=="offline"): #if parked, update every 30 cylces/seconds
-        #if data["power"] != 0: #Sometimes after charging it keeps the last Power and not refresh any more until new drive or charge. 
-        #    data["power"] = 0
+        if data["power"] != 0: #Sometimes after charging it keeps the last Power and not refresh any more until new drive or charge. 
+            data["power"] = 0
         if "kwh_charged" in data:
             del data["kwh_charged"]
         if(i%30==0 or i>30):
