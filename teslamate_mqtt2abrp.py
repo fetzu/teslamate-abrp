@@ -215,7 +215,7 @@ def on_message(client, userdata, message):
             #print("Unneeded topic:", message.topic, payload)
 
         # Calculate acurrate power on AC charging
-        if data["is_dcfc"]==False:
+        if data["power"] != 0.0 and data["is_charging"] == True and "voltage" in data and "current" in data:
             data["power"] = float(data["current"] * data["voltage"] * charger_phases) / 1000.0 * -1
 
         return
