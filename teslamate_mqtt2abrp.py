@@ -295,8 +295,8 @@ def updateABRP():
         else:
             logging.info("Data object successfully sent: {}".format(data))
     except Exception as ex:
-        logging.critical("Unexpected exception while calling ABRP API: {}".format(sys.exc_info()[0]))
-        logging.critical(ex)
+        logging.critical("Unexpected exception while POSTing to ABRP API: {}".format(sys.exc_info()[0]))
+        logging.debug("Error message from ABRP API POST request: {}".format(ex))
     
 ## [ MAIN ]
 # Starts the forever loop updating ABRP
