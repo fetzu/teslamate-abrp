@@ -26,8 +26,9 @@ import sys
 import datetime
 import calendar
 import os
-import paho.mqtt.client as mqtt
+import logging
 import requests
+import paho.mqtt.client as mqtt
 from time import sleep
 from docopt import docopt
 
@@ -39,6 +40,10 @@ if __name__ == '__main__':
 APIKEY = "d49234a5-2553-454e-8321-3fe30b49aa64"
 MQTTUSERNAME = None
 MQTTPASSWORD = None
+
+logging.basicConfig(format='%(asctime)s: [%(levelname)s] %(message)s', 
+                    datefmt='%Y-%m-%d %H:%M:%S',
+                    level=logging.INFO)
 
 if (arguments['-l'] is True or arguments['-a'] is True) and arguments['MQTT_USERNAME'] is not None: 
     MQTTUSERNAME = arguments['MQTT_USERNAME']
@@ -62,9 +67,9 @@ if arguments['CAR_NUMBER'] is not None: CARNUMBER = arguments['CAR_NUMBER']
 elif 'CAR_NUMBER' in os.environ: CARNUMBER = os.environ['CAR_NUMBER']
 else:
     CARNUMBER = 1
-    print("Car number not supplied, defaulting to 1.")
+    logging.info("Car number not supplied, defaulting to 1.")
 
-print(arguments)
+logging.debug("Arguments passed: {}".format(arguments))
 if arguments['--model'] is None: 
     if "CAR_MODEL" in os.environ: CARMODEL = os.environ["CAR_MODEL"]
     else: CARMODEL = None
@@ -73,6 +78,7 @@ else: CARMODEL = arguments['--model']
 ## [ VARS ]
 state = "" #car state
 prev_state = "" #car state previous loop for tracking
+str_now = "" #create a global str_now variable to be used in logging/stdout
 charger_phases = 1
 data = { #dictionary of values sent to ABRP API
     "utc": 0,
@@ -111,7 +117,7 @@ client.connect(MQTTSERVER)
 
 def on_connect(client, userdata, flags, rc):  # The callback for when the client connects to the broker
     # MQTT Error handling
-    if rc == 0: print("Connected with result code {0}. Connection with MQTT server established.".format(str(rc)))
+    if rc == 0: logging.info("Connected with result code {0}. Connection with MQTT server established.".format(str(rc)))
     elif rc == 1: sys.exit("Connection to MQTT server refused: invalid protocol version.")
     elif rc == 2: sys.exit("Connection to MQTT server refused: invalid client identifier.")
     elif rc == 3: sys.exit("Connection to MQTT server refused: server unavailable.")
@@ -212,7 +218,7 @@ def on_message(client, userdata, message):
             a=0 #Volontarely ignored
         else:
             pass
-            #print("Unneeded topic:", message.topic, payload)
+            logging.debug("Unneeded topic: ", message.topic, payload)
 
         # Calculate acurrate power on AC charging
         if data["is_charging"] == True and data["is_dcfc"] == False and "voltage" in data and "current" in data:
@@ -221,7 +227,7 @@ def on_message(client, userdata, message):
         return
 
     except:
-        print("unexpected exception while processing message:", sys.exc_info()[0], message.topic, message.payload)
+        logging.critical("Unexpected exception while processing message:", sys.exc_info()[0], message.topic, message.payload)
 
 # Starts the MQTT loop processing messages
 client.on_message = on_message
@@ -246,7 +252,7 @@ def findCarModel():
         elif data["trim_badging"] == "P74D":
             data["car_model"] = "3p20"
         else:
-            print("Your Model 3 trim could not be automatically determined. Trim reported as: "+data["trim_badging"])
+            logging.warning("Your Model 3 trim could not be automatically determined. Trim reported as: "+data["trim_badging"])
             return
     
     # Handle model Y cases
@@ -258,19 +264,19 @@ def findCarModel():
         elif data["trim_badging"] == "50":
             data["car_model"] = "tesla:my:22:my_lfp:rwd"
         else:
-            print("Your Model Y trim could not be automatically determined. Trim reported as: "+data["trim_badging"])
+            logging.warning("Your Model Y trim could not be automatically determined. Trim reported as: "+data["trim_badging"])
             return
 
     # Handle simple cases (aka Model S and Model X)
     else: data["car_model"] = data["model"].lower()+""+data["trim_badging"].lower()
 
     # Log the determined car model to the console
-    if data["car_model"] is not None: print("Car model automatically determined as: "+data["car_model"])
-    else: print("Car model could not be automatically determined, please set it through the CLI or environment var according to the documentation for best results.")
+    if data["car_model"] is not None: logging.info("Car model automatically determined as: "+data["car_model"])
+    else: logging.warning("Car model could not be automatically determined, please set it through the CLI or environment var according to the documentation for best results.")
 
 # If the car model is not yet known, find it
 if CARMODEL is None: findCarModel()
-else: print("Car model manually set to: "+CARMODEL)
+else: logging.info("Car model manually set to: "+CARMODEL)
 
 ## [ ABRP ]
 # Function to send data to ABRP
@@ -285,12 +291,12 @@ def updateABRP():
         response = requests.post("https://api.iternio.com/1/tlm/send?token="+USERTOKEN, headers=headers, json=body)
         resp = response.json()
         if resp["status"] != "ok":
-            print("Error, response from the ABRP API:", response.text)
+            logging.error("Error, response from the ABRP API:", response.text)
         else:
-            print("Data object successfully sent:", data)
+            logging.info("Data object successfully sent:", data)
     except Exception as ex:
-        print("Unexpected exception while calling ABRP API:", sys.exc_info()[0])
-        print(ex)
+        logging.critical("Unexpected exception while calling ABRP API:", sys.exc_info()[0])
+        logging.critical(ex)
     
 ## [ MAIN ]
 # Starts the forever loop updating ABRP
@@ -298,32 +304,32 @@ i = -1
 while True:
     i+=1
     sleep(1) #refresh rate of 1 cycle per second
-    #print(state)
+    logging.debug(state)
     if state != prev_state:
         i = 30
     current_datetime = datetime.datetime.now(datetime.UTC)
     current_timetuple = current_datetime.timetuple()
     data["utc"] = calendar.timegm(current_timetuple) #utc timestamp must be in every message
     str_now = current_datetime.strftime("%Y-%m-%d %H:%M:%S")
-    msg = str_now + ": Car is " + state
+#    msg = str_now + ": Car is " + state
     if(state == "parked" or state == "online" or state == "suspended" or state=="asleep" or state=="offline"): #if parked, update every 30 cylces/seconds
         if data["power"] != 0: #sometimes after charging the last power value is kept and not refreshed until the next drive or charge session. 
             data["power"] = 0.0
         if "kwh_charged" in data:
             del data["kwh_charged"]
         if(i%30==0 or i>30):
-            print(msg + ", updating every 30s.")
+            logging.info("Car is sleeping, updating every 30s.")
             updateABRP()
             i = 0
     elif state == "charging": #if charging, update every 6 cycles/seconds
         if i%6==0:
-            print(msg +", updating every 6s.")
+            logging.info("Car is charging, updating every 6s.")
             updateABRP()
     elif state == "driving": #if driving, update every cycle/second
-        print(msg + ", updating every second.")
+        logging.info("Car is driving, updating every second.")
         updateABRP()
     else:
-        print(msg + " (unknown state), not sending any update to ABRP.")
+        logging.error("Car is in unkown state ({}), not sending any update to ABRP.".format(state))
     prev_state = state
 
 client.loop_stop()
