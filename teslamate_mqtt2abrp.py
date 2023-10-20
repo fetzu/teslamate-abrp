@@ -28,7 +28,6 @@ import calendar
 import os
 import paho.mqtt.client as mqtt
 import requests
-import json
 from time import sleep
 from docopt import docopt
 
@@ -279,17 +278,9 @@ def updateABRP():
     global data
     global APIKEY
     global USERTOKEN
-
-    # Convert the dictionary to a JSON string
-    json_data = json.dumps(data)
-
-    # Now, json_string contains the JSON representation of the 'data' dictionary
-    msgDetails = "Data object sent:"
-    print(msgDetails, json_data)
-
     try:
         headers = {"Authorization": "APIKEY "+APIKEY}
-        body = {"tlm": json_data}
+        body = {"tlm": data}
         response = requests.post("https://api.iternio.com/1/tlm/send?token="+USERTOKEN, headers=headers, json=body)
         resp = response.json()
         if resp["status"] != "ok":
@@ -310,8 +301,10 @@ while True:
     current_datetime = datetime.datetime.now(datetime.UTC)
     current_timetuple = current_datetime.timetuple()
     data["utc"] = calendar.timegm(current_timetuple) #utc timestamp must be in every message
+    
     str_now = current_datetime.strftime("%Y-%m-%d %H:%M:%S")
     msg = str_now + ": Car is " + state
+    msgDetails = "Data object sent:"
     if(state == "parked" or state == "online" or state == "suspended" or state=="asleep" or state=="offline"): #if parked, update every 30 cylces/seconds
         if data["power"] != 0: #Sometimes after charging it keeps the last Power and not refresh any more until new drive or charge. 
             data["power"] = 0
@@ -319,14 +312,17 @@ while True:
             del data["kwh_charged"]
         if(i%30==0 or i>30):
             print(msg + ", updating every 30s.")
+            print(msgDetails, data)
             updateABRP()
             i = 0
     elif state == "charging": #if charging, update every 6 cycles/seconds
         if i%6==0:
             print(msg +", updating every 6s.")
+            print(msgDetails, data)
             updateABRP()
     elif state == "driving": #if driving, update every cycle/second
         print(msg + ", updating every second.")
+        print(msgDetails, data)
         updateABRP()
     else:
         print(msg + " (unknown state), not sending any update to ABRP.")
