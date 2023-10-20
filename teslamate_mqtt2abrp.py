@@ -218,7 +218,7 @@ def on_message(client, userdata, message):
             a=0 #Volontarely ignored
         else:
             pass
-            logging.debug("Unneeded topic: ", message.topic, payload)
+            logging.debug("Unneeded topic: {} {}".format(message.topic, payload))
 
         # Calculate acurrate power on AC charging
         if data["is_charging"] == True and data["is_dcfc"] == False and "voltage" in data and "current" in data:
@@ -227,7 +227,7 @@ def on_message(client, userdata, message):
         return
 
     except:
-        logging.critical("Unexpected exception while processing message:", sys.exc_info()[0], message.topic, message.payload)
+        logging.critical("Unexpected exception while processing message: {} {} {}".format(sys.exc_info()[0], message.topic, message.payload))
 
 # Starts the MQTT loop processing messages
 client.on_message = on_message
@@ -252,7 +252,7 @@ def findCarModel():
         elif data["trim_badging"] == "P74D":
             data["car_model"] = "3p20"
         else:
-            logging.warning("Your Model 3 trim could not be automatically determined. Trim reported as: "+data["trim_badging"])
+            logging.warning("Your Model 3 trim could not be automatically determined. Trim reported as: {}.".format(data["trim_badging"]))
             return
     
     # Handle model Y cases
@@ -264,19 +264,19 @@ def findCarModel():
         elif data["trim_badging"] == "50":
             data["car_model"] = "tesla:my:22:my_lfp:rwd"
         else:
-            logging.warning("Your Model Y trim could not be automatically determined. Trim reported as: "+data["trim_badging"])
+            logging.warning("Your Model Y trim could not be automatically determined. Trim reported as: {}.".format(data["trim_badging"]))
             return
 
     # Handle simple cases (aka Model S and Model X)
     else: data["car_model"] = data["model"].lower()+""+data["trim_badging"].lower()
 
     # Log the determined car model to the console
-    if data["car_model"] is not None: logging.info("Car model automatically determined as: "+data["car_model"])
+    if data["car_model"] is not None: logging.info("Car model automatically determined as: {}.".format(data["car_model"]))
     else: logging.warning("Car model could not be automatically determined, please set it through the CLI or environment var according to the documentation for best results.")
 
 # If the car model is not yet known, find it
 if CARMODEL is None: findCarModel()
-else: logging.info("Car model manually set to: "+CARMODEL)
+else: logging.info("Car model manually set to: {}.".format(CARMODEL))
 
 ## [ ABRP ]
 # Function to send data to ABRP
@@ -291,11 +291,11 @@ def updateABRP():
         response = requests.post("https://api.iternio.com/1/tlm/send?token="+USERTOKEN, headers=headers, json=body)
         resp = response.json()
         if resp["status"] != "ok":
-            logging.error("Error, response from the ABRP API:", response.text)
+            logging.error("Error, response from the ABRP API: {}.".format(response.text))
         else:
-            logging.info("Data object successfully sent:", data)
+            logging.info("Data object successfully sent: {}".format(data))
     except Exception as ex:
-        logging.critical("Unexpected exception while calling ABRP API:", sys.exc_info()[0])
+        logging.critical("Unexpected exception while calling ABRP API: {}".format(sys.exc_info()[0]))
         logging.critical(ex)
     
 ## [ MAIN ]
