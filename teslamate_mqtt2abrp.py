@@ -318,15 +318,15 @@ while True:
         if "kwh_charged" in data:
             del data["kwh_charged"]
         if(i%30==0 or i>30):
-            logging.info("Car is sleeping, updating every 30s.")
+            if prev_state != state: logging.info("Car is sleeping, updating every 30s.")
             updateABRP()
             i = 0
     elif state == "charging": #if charging, update every 6 cycles/seconds
         if i%6==0:
-            logging.info("Car is charging, updating every 6s.")
+            if prev_state != state: logging.info("Car is charging, updating every 6s.")
             updateABRP()
     elif state == "driving": #if driving, update every cycle/second
-        logging.info("Car is driving, updating every second.")
+        if prev_state != state: logging.info("Car is driving, updating every second.")
         updateABRP()
     else:
         logging.error("Car is in unkown state ({}), not sending any update to ABRP.".format(state))
