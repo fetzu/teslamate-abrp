@@ -181,10 +181,10 @@ if BASETOPIC is not None:
 logging.debug("Trying to connect to {}:{}".format(MQTTSERVER,MQTTPORT))
 client.connect(MQTTSERVER, MQTTPORT)
 
-def on_connect(client, userdata, flags, rc):  # The callback for when the client connects to the broker
+def on_connect(client, userdata, flags, reason_code, properties):  # The callback for when the client connects to the broker
     # MQTT Error handling
-    logging.info("MQTT Connection returned result: {} Code {}.".format(mqtt.connack_string(rc),rc))
-    if rc != 0:
+    logging.info("MQTT Connection returned result: {} Code {}.".format(mqtt.connack_string(reason_code),reason_code))
+    if reason_code != 0:
         sys.exit("Could not connect")
     client.subscribe(f"teslamate/cars/{CARNUMBER}/#")
     if BASETOPIC is not None: client.publish(state_topic, payload="online", qos=2, retain=True)
