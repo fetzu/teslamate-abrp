@@ -16,6 +16,9 @@ updates:
       - "fetzu"
     ignore:
       - dependency-name: "/.github/workflows/build.yml"
+      - dependency-name: "/.github/workflows/build_alpha.yml"
+      - dependency-name: "/.github/workflows/build_beta.yml"
+      - dependency-name: "/.github/workflows/build_latest.yml"
 
   - package-ecosystem: "docker"
     directory: "/"
@@ -33,6 +36,9 @@ updates:
       - "fetzu"
     ignore:
       - dependency-name: "/.github/workflows/build.yml"
+      - dependency-name: "/.github/workflows/build_alpha.yml"
+      - dependency-name: "/.github/workflows/build_beta.yml"
+      - dependency-name: "/.github/workflows/build_latest.yml"
 
   - package-ecosystem: "github-actions"
     directory: "/"
@@ -50,3 +56,6 @@ updates:
       - "fetzu"
     ignore:
       - dependency-name: "/.github/workflows/build.yml"
+      - dependency-name: "/.github/workflows/build_alpha.yml"
+      - dependency-name: "/.github/workflows/build_beta.yml"
+      - dependency-name: "/.github/workflows/build_latest.yml"
