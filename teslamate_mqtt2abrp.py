@@ -49,7 +49,6 @@ class TeslaMateABRP:
         self.config = config
         self.configure_logging()
         self.setup_mqtt_client()
-        
         self.state = ""
         self.prev_state = ""
         self.charger_phases = 1
@@ -109,7 +108,7 @@ class TeslaMateABRP:
             mqtt.CallbackAPIVersion.VERSION2, 
             f"teslamateToABRP-{self.config.get('CARNUMBER')}"
         )
-        
+
         # Set up authentication if needed
         if self.config.get("MQTTUSERNAME"):
             if self.config.get("MQTTPASSWORD"):
@@ -118,21 +117,21 @@ class TeslaMateABRP:
             else:
                 logging.debug(f"Using MQTT username: {self.config.get('MQTTUSERNAME')}")
                 self.client.username_pw_set(self.config.get("MQTTUSERNAME"))
-        
+
         # Set up TLS if needed
         if self.config.get("MQTTTLS"):
             logging.debug("Using TLS with MQTT")
             self.client.tls_set()
-        
+
         # Set up last will if base topic is set
         if self.base_topic:
             logging.debug(f"Using MQTT base topic: {self.base_topic} for last will")
             self.client.will_set(self.state_topic, payload="offline", qos=2, retain=True)
-        
+
         # Set up callbacks
         self.client.on_connect = self.on_connect
         self.client.on_message = self.on_message
-        
+
         # Connect to MQTT server
         try:
             logging.debug(f"Trying to connect to {self.config.get('MQTTSERVER')}:{self.config.get('MQTTPORT')}")
@@ -148,7 +147,7 @@ class TeslaMateABRP:
             sys.exit("Could not connect to MQTT server")
         
         client.subscribe(f"teslamate/cars/{self.config.get('CARNUMBER')}/#")
-        
+
         if self.base_topic:
             client.publish(self.state_topic, payload="online", qos=2, retain=True)
 
@@ -158,17 +157,17 @@ class TeslaMateABRP:
             topic_name = message.topic.split('/')[-1]
             
             self.process_message(topic_name, payload)
-            
+
         except Exception as e:
             logging.critical(f"Unexpected exception while processing message: {type(e).__name__} - {e}, topic: {message.topic}, payload: {message.payload}")
 
     def process_message(self, topic: str, payload: str):
         """Process individual MQTT message based on topic name"""
-        
+
         # Skip empty payloads for most topics
         if not payload and topic not in ["shift_state", "state"]:
             return
-            
+
         if topic == "model":
             self.data["model"] = payload
         elif topic == "trim_badging":
@@ -277,7 +276,7 @@ class TeslaMateABRP:
         else:
             # Unhandled topic
             logging.debug(f"Unneeded topic: {topic} {payload}")
-            
+
         # Calculate accurate power on AC charging
         if self.data["is_charging"] and not self.data["is_dcfc"] and "voltage" in self.data and "current" in self.data:
             self.data["power"] = float(self.data["current"] * self.data["voltage"] * self.charger_phases) / 1000.0 * -1
@@ -348,7 +347,7 @@ class TeslaMateABRP:
                 json=body,
                 timeout=10
             )
-            
+
             try:
                 resp = response.json()
                 if self.base_topic:
@@ -366,7 +365,7 @@ class TeslaMateABRP:
                 logging.error(f"Invalid response from ABRP API: {e}")
                 if self.base_topic:
                     self.publish_to_mqtt({f"{self.prefix}_post_last_error": self.nice_now()})
-                    
+
         except requests.RequestException as ex:
             logging.critical(f"Failed to connect to ABRP API: {ex}")
             if self.base_topic:
@@ -388,15 +387,15 @@ class TeslaMateABRP:
         while True:
             i += 1
             sleep(1)  # Base refresh rate
-            
+
             # Reset counter when state changes
             if self.state != self.prev_state:
                 i = max(REFRESH_RATE_PARKED, REFRESH_RATE_CHARGING, REFRESH_RATE_DRIVING)
                 logging.debug(f"Current car state changed to: {self.state}.")
-            
+
             # Update UTC timestamp
             self.data["utc"] = calendar.timegm(datetime.datetime.now(datetime.UTC).timetuple())
-            
+
             # Handle different car states
             if self.state in ["parked", "online", "suspended", "asleep", "offline"]:
                 self.handle_parked_state(i)
@@ -435,7 +434,7 @@ class TeslaMateABRP:
         # Remove kwh_charged field when not charging
         if "kwh_charged" in self.data:
             self.data.pop("kwh_charged", None)
-                
+ 
     def run(self):
         """Main entry point to run the application"""
         # If car model not provided, try to determine it
@@ -488,27 +487,27 @@ def main(user_token, car_number, mqtt_server, mqtt_username, mqtt_password, mqtt
     """
     # Initialize config dictionary
     config = {}
-    
+
     # Check for Docker secrets first for sensitive data
     if not user_token:
         docker_token = get_docker_secret('USER_TOKEN')
         if docker_token:
             user_token = docker_token
-    
+
     if use_auth and not mqtt_password:
         docker_password = get_docker_secret('MQTT_PASSWORD')
         if docker_password:
             mqtt_password = docker_password
-    
+
     # Required arguments checks
     if not mqtt_server:
         click.echo("MQTT server address not supplied. Please supply through environment variables or CLI argument.")
         sys.exit(1)
-    
+
     if not user_token:
         click.echo("User token not supplied. Please generate it through ABRP and supply through environment variables or CLI argument.")
         sys.exit(1)
-    
+
     # Set up configuration dict
     config["MQTTSERVER"] = mqtt_server
     config["USERTOKEN"] = user_token
@@ -521,7 +520,7 @@ def main(user_token, car_number, mqtt_server, mqtt_username, mqtt_password, mqtt
     config["BASETOPIC"] = status_topic
     config["SKIPLOCATION"] = skip_location
     config["DEBUG"] = debug
-    
+
     # Run the application
     try:
         teslamate_abrp = TeslaMateABRP(config)

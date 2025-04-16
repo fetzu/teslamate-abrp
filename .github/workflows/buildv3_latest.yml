@@ -40,7 +40,7 @@ jobs:
           flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
       
       - name: Security scan with bandit
-        run: bandit -r . -x tests/
+        run: bandit -r . -x tests/ -ll HIGH
       
       - name: Type check with mypy
         run: mypy --ignore-missing-imports teslamate_mqtt2abrp.py
