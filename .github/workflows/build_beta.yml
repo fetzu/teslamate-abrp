@@ -1,3 +1,4 @@
+# !NOTE: This action is deprecated and currently disabled.
 # Build for amd64 and arm64 and publish to DockerHub and GitHub Packages
 # Pre-release published as :beta
 

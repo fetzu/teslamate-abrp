@@ -1,16 +1,10 @@
-name: Build and Publish Docker Image (v3)
+name: Build Beta Image
 
 on:
   release:
     types: 
-      - 'released'
-      - 'edited'
-  workflow_dispatch:
-  push:
-    branches: [ vibecoding ]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
+      - 'prereleased'
+  workflow_dispatch:  # Allow manual triggering
 
 jobs:
   test:
@@ -23,7 +17,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.13'
           cache: 'pip'
       
       - name: Install dependencies
@@ -55,7 +49,7 @@ jobs:
           fail_ci_if_error: false
 
   build_and_push:
-    name: Build and Push Docker image
+    name: Build and Push Beta Docker image
     needs: test
     runs-on: ubuntu-latest
     permissions:
@@ -93,9 +87,9 @@ jobs:
             ghcr.io/${{ github.repository }}
           tags: |
             type=semver,pattern={{version}}
-            type=ref,event=branch
-            type=ref,event=pr
-            type=sha,format=long
+            type=raw,value=beta
+          flavor: |
+            latest=false
       
       - name: Build container for testing
         uses: docker/build-push-action@v6
@@ -116,7 +110,6 @@ jobs:
           severity: 'CRITICAL,HIGH'
       
       - name: Build and push Docker images
-        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -126,13 +119,3 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      
-      - name: Update Docker Hub Description
-        if: github.event_name == 'release'
-        uses: peter-evans/dockerhub-description@v4
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
-          repository: fetzu/teslamate-abrp
-          short-description: "Bridge between TeslaMate and A Better Route Planner"
-          readme-filepath: ./README.md

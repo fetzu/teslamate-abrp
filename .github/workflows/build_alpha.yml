@@ -1,3 +1,4 @@
+# !NOTE: This action is deprecated and currently disabled.
 # Build for amd64 and arm64 and publish to DockerHub and GitHub Packages
 # Bleeding edge of main published as :alpha
 # The :alpha image is automatically re-built and pushed fortnightly to include changes to upstream images

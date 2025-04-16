@@ -1,0 +1,125 @@
+name: Build Alpha Image
+
+on:
+  push:
+    branches: 
+      - 'main'
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  schedule:
+    - cron: "37 1 */1,*/14 * *"  # Fortnightly rebuild
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Test Python Application
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-cov flake8 bandit mypy types-requests
+      
+      - name: Lint with flake8
+        run: |
+          # stop the build if there are Python syntax errors or undefined names
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+          # exit-zero treats all errors as warnings
+          flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+      
+      - name: Security scan with bandit
+        run: bandit -r . -x tests/ --severity-level high --exit-zero
+      
+      - name: Type check with mypy
+        run: mypy --ignore-missing-imports teslamate_mqtt2abrp.py
+      
+      - name: Run tests with pytest
+        run: pytest --cov=./ --cov-report=xml
+      
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage.xml
+          fail_ci_if_error: false
+
+  build_and_push:
+    name: Build and Push Alpha Docker image
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      contents: read
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+        
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3.2.0
+        
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3.8.0
+      
+      - name: Log in to DockerHub
+        uses: docker/login-action@v3.3.0
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+      
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            fetzu/teslamate-abrp
+            ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=alpha
+          flavor: |
+            latest=false
+      
+      - name: Build container for testing
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: teslamate-abrp:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: teslamate-abrp:test
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: 'CRITICAL,HIGH'
+      
+      - name: Build and push Docker images
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
