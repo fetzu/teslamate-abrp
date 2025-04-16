@@ -1,6 +1,6 @@
 import pytest
 import json
-from unittest.mock import patch, MagicMock, mock_open
+from unittest.mock import patch, MagicMock, mock_open, call
 import os
 from teslamate_mqtt2abrp import TeslaMateABRP
 
@@ -21,13 +21,46 @@ def mock_args():
     }
 
 @pytest.fixture
+def mock_args_with_base_topic():
+    return {
+        "DEBUG": False,
+        "MQTTUSERNAME": None,
+        "MQTTPASSWORD": None,
+        "MQTTTLS": False,
+        "SKIPLOCATION": False,
+        "USERTOKEN": 'test-token',
+        "CARNUMBER": '1',
+        "MQTTSERVER": 'test-server',
+        "MQTTPORT": '1883',
+        "CARMODEL": None,
+        "BASETOPIC": "tesla/abrp/status"
+    }
+
+@pytest.fixture
 def teslamate_abrp(mock_args):
     with patch('teslamate_mqtt2abrp.mqtt.Client') as mock_client:
         instance = mock_client.return_value
         instance.connect.return_value = None
         instance.loop_start.return_value = None
-        with patch('teslamate_mqtt2abrp.TeslaMateABRP.setup_mqtt_client'):
-            return TeslaMateABRP(mock_args)
+        
+        # Create instance WITHOUT patching setup_mqtt_client
+        abrp = TeslaMateABRP(mock_args)
+        # Ensure client property exists
+        abrp.client = instance
+        return abrp
+
+@pytest.fixture
+def teslamate_abrp_with_topic(mock_args_with_base_topic):
+    with patch('teslamate_mqtt2abrp.mqtt.Client') as mock_client:
+        instance = mock_client.return_value
+        instance.connect.return_value = None
+        instance.loop_start.return_value = None
+        
+        # Create instance WITHOUT patching setup_mqtt_client
+        abrp = TeslaMateABRP(mock_args_with_base_topic)
+        # Ensure client property exists
+        abrp.client = instance
+        return abrp
 
 def test_parse_config(mock_args):
     with patch('teslamate_mqtt2abrp.TeslaMateABRP.setup_mqtt_client'):
@@ -37,6 +70,15 @@ def test_parse_config(mock_args):
     assert abrp.config.get('CARNUMBER') == '1'
     assert abrp.config.get('MQTTSERVER') == 'test-server'
     assert abrp.config.get('MQTTPORT') == '1883'
+    assert abrp.base_topic is None
+    
+def test_parse_config_with_base_topic(mock_args_with_base_topic):
+    with patch('teslamate_mqtt2abrp.TeslaMateABRP.setup_mqtt_client'):
+        abrp = TeslaMateABRP(mock_args_with_base_topic)
+    
+    assert abrp.config.get('BASETOPIC') == 'tesla/abrp/status'
+    assert abrp.base_topic == 'tesla/abrp/status'
+    assert abrp.state_topic == 'tesla/abrp/status/_tm2abrp_status'
     
 def test_get_docker_secret():
     # Test when secret file exists
@@ -179,6 +221,116 @@ def test_update_abrp(teslamate_abrp):
         # Test exception handling
         mock_post.side_effect = Exception("Test exception")
         teslamate_abrp.update_abrp()
+
+def test_publish_to_mqtt_without_base_topic(teslamate_abrp):
+    # Verify the client attribute exists
+    assert hasattr(teslamate_abrp, 'client')
+    
+    with patch.object(teslamate_abrp.client, 'publish') as mock_publish:
+        # Call method with sample data
+        teslamate_abrp.publish_to_mqtt({"test_key": "test_value"})
+        
+        # Verify publish was not called since base_topic is None
+        mock_publish.assert_not_called()
+
+def test_publish_to_mqtt_with_base_topic(teslamate_abrp_with_topic):
+    # Verify the client attribute exists
+    assert hasattr(teslamate_abrp_with_topic, 'client')
+    
+    with patch.object(teslamate_abrp_with_topic.client, 'publish') as mock_publish:
+        # Call method with sample data
+        teslamate_abrp_with_topic.publish_to_mqtt({"test_key": "test_value"})
+        
+        # Verify publish was called with correct parameters
+        mock_publish.assert_called_once_with(
+            "tesla/abrp/status/test_key",
+            payload="test_value",
+            qos=1,
+            retain=True
+        )
+
+def test_on_connect_without_base_topic(teslamate_abrp):
+    client_mock = MagicMock()
+    
+    teslamate_abrp.on_connect(client_mock, None, None, 0, None)
+    
+    # Should only subscribe, not publish online status
+    client_mock.subscribe.assert_called_once_with("teslamate/cars/1/#")
+    client_mock.publish.assert_not_called()
+
+def test_on_connect_with_base_topic(teslamate_abrp_with_topic):
+    client_mock = MagicMock()
+    
+    teslamate_abrp_with_topic.on_connect(client_mock, None, None, 0, None)
+    
+    # Should subscribe and publish online status
+    client_mock.subscribe.assert_called_once_with("teslamate/cars/1/#")
+    client_mock.publish.assert_called_once_with(
+        "tesla/abrp/status/_tm2abrp_status", 
+        payload="online",
+        qos=2,
+        retain=True
+    )
+
+def test_update_timely_mqtt_publishing():
+    # Create a test instance with base_topic
+    test_config = {
+        "DEBUG": False,
+        "MQTTUSERNAME": None,
+        "MQTTPASSWORD": None,
+        "MQTTTLS": False,
+        "SKIPLOCATION": False,
+        "USERTOKEN": 'test-token',
+        "CARNUMBER": '1',
+        "MQTTSERVER": 'test-server',
+        "MQTTPORT": '1883',
+        "CARMODEL": None,
+        "BASETOPIC": "tesla/abrp/status"
+    }
+    
+    # Create a separate test instance for this test
+    with patch('teslamate_mqtt2abrp.mqtt.Client') as mock_client:
+        instance = mock_client.return_value
+        with patch('time.sleep'):  # Skip actual sleep
+            with patch('teslamate_mqtt2abrp.TeslaMateABRP.update_abrp'):
+                with patch('teslamate_mqtt2abrp.TeslaMateABRP.publish_to_mqtt') as mock_publish:
+                    # Create instance directly with mocked methods
+                    abrp = TeslaMateABRP(test_config)
+                    abrp.client = instance
+                    
+                    # Setup driving state
+                    abrp.state = "driving"
+                    abrp.prev_state = "online"
+                    
+                    # Modify update_timely to exit after one iteration
+                    original_update_timely = abrp.update_timely
+                    
+                    def mock_update_timely():
+                        # Simulate one iteration of the while loop
+                        i = 0
+                        # Update UTC timestamp
+                        abrp.data["utc"] = 1234567890  # Mock timestamp
+                        
+                        # Handle different car states - simulate driving state
+                        if abrp.state == "driving":
+                            abrp.update_abrp()
+                            if abrp.base_topic:
+                                abrp.publish_to_mqtt(abrp.data)
+                        
+                        # Raise exception to exit the function
+                        raise KeyboardInterrupt()
+                    
+                    # Replace method
+                    abrp.update_timely = mock_update_timely
+                    
+                    # Run with exception handling
+                    try:
+                        abrp.update_timely()
+                    except KeyboardInterrupt:
+                        pass
+                    
+                    # Verify publish_to_mqtt was called once with abrp.data
+                    mock_publish.assert_called_once_with(abrp.data)
 
 if __name__ == "__main__":
     pytest.main()

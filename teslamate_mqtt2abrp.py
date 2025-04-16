@@ -47,13 +47,15 @@ class TeslaMateABRP:
     def __init__(self, config):
         self.config = config
         self.configure_logging()
+        self.base_topic = self.config.get("BASETOPIC")
+        self.prefix = "_tm2abrp"
+        # Only set state_topic if base_topic is provided
+        self.state_topic = f"{self.base_topic}/{self.prefix}_status" if self.base_topic else None
+        
         self.setup_mqtt_client()
         self.state = ""
         self.prev_state = ""
         self.charger_phases = 1
-        self.base_topic = self.config.get("BASETOPIC")
-        self.prefix = "_tm2abrp"
-        self.state_topic = f"{self.base_topic}/{self.prefix}_status" if self.base_topic else None
         
         # Default data structure for ABRP
         self.data = {
@@ -157,6 +159,7 @@ class TeslaMateABRP:
         
         client.subscribe(f"teslamate/cars/{self.config.get('CARNUMBER')}/#")
 
+        # Only publish online status if base_topic is set
         if self.base_topic:
             client.publish(self.state_topic, payload="online", qos=2, retain=True)
 
@@ -333,6 +336,10 @@ class TeslaMateABRP:
 
     def publish_to_mqtt(self, data_object: Dict[str, Any]):
         """Publish data to MQTT topics"""
+        # Only publish if base_topic is set
+        if not self.base_topic:
+            return
+            
         logging.debug(f"Publishing to MQTT: {data_object}")
         for key, value in data_object.items():
             try:
