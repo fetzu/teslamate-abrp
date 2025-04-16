@@ -31,5 +31,5 @@ COPY --chown=toor:toor LICENSE .
 # Use non-root user
 USER toor
 
-# Run the application
-CMD ["python", "-u", "teslamate_mqtt2abrp.py"]
+# Run the app (and use the absolute path to the script to do it)
+CMD ["python", "-u", "/app/teslamate_mqtt2abrp.py"]
