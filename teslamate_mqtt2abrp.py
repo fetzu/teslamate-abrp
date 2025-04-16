@@ -1,4 +1,3 @@
-## [ CLI with Click ]
 """
 TeslaMate MQTT to ABRP:
 A slightly convoluted way of getting your vehicle data from TeslaMate to A Better Route Planner.
@@ -135,7 +134,17 @@ class TeslaMateABRP:
         # Connect to MQTT server
         try:
             logging.debug(f"Trying to connect to {self.config.get('MQTTSERVER')}:{self.config.get('MQTTPORT')}")
-            self.client.connect(self.config.get("MQTTSERVER"), self.config.get("MQTTPORT"))
+            # Convert MQTTPORT to int if it's a string
+            mqtt_port = self.config.get("MQTTPORT")
+            if isinstance(mqtt_port, str):
+                try:
+                    mqtt_port = int(mqtt_port)
+                except ValueError:
+                    mqtt_port = DEFAULT_MQTT_PORT
+            elif mqtt_port is None:
+                mqtt_port = DEFAULT_MQTT_PORT
+                
+            self.client.connect(self.config.get("MQTTSERVER"), mqtt_port)
             self.client.loop_start()
         except Exception as e:
             logging.critical(f"Failed to connect to MQTT server: {e}")

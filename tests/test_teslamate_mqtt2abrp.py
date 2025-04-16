@@ -7,19 +7,17 @@ from teslamate_mqtt2abrp import TeslaMateABRP
 @pytest.fixture
 def mock_args():
     return {
-        '-d': False,
-        '-l': False,
-        '-p': False,
-        '-s': False,
-        '-x': False,
-        'USER_TOKEN': 'test-token',
-        'CAR_NUMBER': '1',
-        'MQTT_SERVER': 'test-server',
-        'MQTT_PORT': '1883',
-        'MQTT_USERNAME': None,
-        'MQTT_PASSWORD': None,
-        '--model': None,
-        '--status_topic': None
+        "DEBUG": False,
+        "MQTTUSERNAME": None,
+        "MQTTPASSWORD": None,
+        "MQTTTLS": False,
+        "SKIPLOCATION": False,
+        "USERTOKEN": 'test-token',
+        "CARNUMBER": '1',
+        "MQTTSERVER": 'test-server',
+        "MQTTPORT": '1883',
+        "CARMODEL": None,
+        "BASETOPIC": None
     }
 
 @pytest.fixture
@@ -38,7 +36,7 @@ def test_parse_config(mock_args):
     assert abrp.config.get('USERTOKEN') == 'test-token'
     assert abrp.config.get('CARNUMBER') == '1'
     assert abrp.config.get('MQTTSERVER') == 'test-server'
-    assert abrp.config.get('MQTTPORT') == 1883
+    assert abrp.config.get('MQTTPORT') == '1883'
     
 def test_get_docker_secret():
     # Test when secret file exists
@@ -46,10 +44,17 @@ def test_get_docker_secret():
         with patch('builtins.open', mock_open(read_data="secret_value\n")):
             with patch('teslamate_mqtt2abrp.TeslaMateABRP.setup_mqtt_client'):
                 abrp = TeslaMateABRP({
-                    '-d': False, '-l': False, '-p': False, '-s': False, '-x': False,
-                    'USER_TOKEN': 'test', 'CAR_NUMBER': '1', 'MQTT_SERVER': 'test',
-                    'MQTT_PORT': '1883', 'MQTT_USERNAME': None, 'MQTT_PASSWORD': None,
-                    '--model': None, '--status_topic': None
+                    "DEBUG": False,
+                    "MQTTUSERNAME": None,
+                    "MQTTPASSWORD": None,
+                    "MQTTTLS": False,
+                    "SKIPLOCATION": False,
+                    "USERTOKEN": 'test',
+                    "CARNUMBER": '1',
+                    "MQTTSERVER": 'test',
+                    "MQTTPORT": '1883',
+                    "CARMODEL": None,
+                    "BASETOPIC": None
                 })
                 secret = abrp.get_docker_secret('test_secret')
                 assert secret == 'secret_value'
@@ -58,10 +63,17 @@ def test_get_docker_secret():
     with patch('os.path.isfile', return_value=False):
         with patch('teslamate_mqtt2abrp.TeslaMateABRP.setup_mqtt_client'):
             abrp = TeslaMateABRP({
-                '-d': False, '-l': False, '-p': False, '-s': False, '-x': False,
-                'USER_TOKEN': 'test', 'CAR_NUMBER': '1', 'MQTT_SERVER': 'test',
-                'MQTT_PORT': '1883', 'MQTT_USERNAME': None, 'MQTT_PASSWORD': None,
-                '--model': None, '--status_topic': None
+                "DEBUG": False,
+                "MQTTUSERNAME": None,
+                "MQTTPASSWORD": None,
+                "MQTTTLS": False,
+                "SKIPLOCATION": False,
+                "USERTOKEN": 'test',
+                "CARNUMBER": '1',
+                "MQTTSERVER": 'test',
+                "MQTTPORT": '1883',
+                "CARMODEL": None,
+                "BASETOPIC": None
             })
             secret = abrp.get_docker_secret('test_secret')
             assert secret is None
