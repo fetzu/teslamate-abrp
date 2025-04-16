@@ -1,4 +1,4 @@
-name: Build Alpha Image
+name: Build :alpha (v3)
 
 on:
   push:
