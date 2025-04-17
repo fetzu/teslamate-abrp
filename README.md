@@ -1,5 +1,6 @@
 # TeslaMate: MQTT to ABRP
 
+[![codecov](https://codecov.io/gh/fetzu/teslamate-abrp/graph/badge.svg?token=5PBYBMOAEN)](https://codecov.io/gh/fetzu/teslamate-abrp)
 [![Test and Build](https://github.com/fetzu/teslamate-abrp/actions/workflows/build_latest.yml/badge.svg)](https://github.com/fetzu/teslamate-abrp/actions/workflows/build_latest.yml)
 [![GitHub release](https://img.shields.io/github/v/release/fetzu/teslamate-abrp)](https://github.com/fetzu/teslamate-abrp/releases/latest)
 [![Docker Image Size](https://img.shields.io/docker/image-size/fetzu/teslamate-abrp/latest)](https://hub.docker.com/r/fetzu/teslamate-abrp)
