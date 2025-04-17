@@ -471,8 +471,21 @@ class TeslaMateABRP:
                 self.client.disconnect()
             logging.info("Shutdown complete.")
 
+def get_docker_secret(secret_name: str) -> Optional[str]:
+    """Read a secret from Docker secrets directory"""
+    file_path = f"/run/secrets/{secret_name}"
+    if os.path.isfile(file_path):
+        try:
+            with open(file_path, "r") as f:
+                content = f.read().splitlines()
+                if content and content[0]:
+                    return content[0]
+        except Exception as e:
+            logging.error(f"Error reading docker secret {secret_name}: {e}")
+    return None
+
 ## [ Click CLI Implementation ]
-@click.command(help="TeslaMate MQTT to ABRP bridge")
+@click.command(help="A slightly convoluted way of getting your vehicle data from TeslaMate to A Better Route Planner.")
 @click.argument('user_token', required=False, envvar='USER_TOKEN')
 @click.argument('car_number', required=False, envvar='CAR_NUMBER')
 @click.argument('mqtt_server', required=False, envvar='MQTT_SERVER')
@@ -547,19 +560,6 @@ def main(user_token, car_number, mqtt_server, mqtt_username, mqtt_password, mqtt
     except Exception as e:
         logging.critical(f"Unhandled exception: {e}")
         sys.exit(1)
-
-def get_docker_secret(secret_name: str) -> Optional[str]:
-    """Read a secret from Docker secrets directory"""
-    file_path = f"/run/secrets/{secret_name}"
-    if os.path.isfile(file_path):
-        try:
-            with open(file_path, "r") as f:
-                content = f.read().splitlines()
-                if content and content[0]:
-                    return content[0]
-        except Exception as e:
-            logging.error(f"Error reading docker secret {secret_name}: {e}")
-    return None
 
 ## [ MAIN ]
 if __name__ == '__main__':
