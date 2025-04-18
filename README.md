@@ -11,10 +11,9 @@ A bridge to send your Tesla vehicle data from [TeslaMate](https://github.com/tes
 
 ## Features
 
-- Automatically sends TeslaMate data to ABRP via their API
-- Variable update rates based on vehicle state (driving, charging, parked)
-- Support for multiple car models (Model S, 3, X, Y)
-- Secure options for authentication and TLS encryption
+- Automatically sends MQTT TeslaMate data to A Better Route Planner
+- Variable (and configurable) update rates based on vehicle state (driving, charging, parked)
+- Secure MQTT options for authentication and (MQTT)TLS encryption
 - Support for Docker secrets management
 - Optional location anonymization
 
@@ -31,7 +30,7 @@ A bridge to send your Tesla vehicle data from [TeslaMate](https://github.com/tes
 1. Log in to the ABRP web app or mobile app
 2. Navigate to your car settings
 3. Use the "generic" card (last one at the bottom) to generate your user token
-4. Save this token securely - you'll need it to configure the bridge
+4. Save this token securely - you'll need it to configure teslamate-abrp
 
 ### Option 1: Docker Setup (Recommended)
 
