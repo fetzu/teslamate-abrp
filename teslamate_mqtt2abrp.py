@@ -14,7 +14,7 @@ import json
 import paho.mqtt.client as mqtt
 import click
 from time import sleep
-from typing import Dict, Any, Optional, Union
+from typing import Dict, Any, Optional
 
 ## [ CONFIGURATION ]
 APIKEY = "d49234a5-2553-454e-8321-3fe30b49aa64"
@@ -92,18 +92,6 @@ class TeslaMateABRP:
         if log_level == logging.DEBUG:
             logging.debug("Logging level set to DEBUG.")
 
-    def get_docker_secret(self, secret_name: str) -> Optional[str]:
-        file_path = f"/run/secrets/{secret_name}"
-        if os.path.isfile(file_path):
-            try:
-                with open(file_path, "r") as f:
-                    content = f.read().splitlines()
-                    if content and content[0]:
-                        return content[0]
-            except Exception as e:
-                logging.error(f"Error reading docker secret {secret_name}: {e}")
-        return None
-
     def setup_mqtt_client(self):
         self.client = mqtt.Client(
             mqtt.CallbackAPIVersion.VERSION2, 
@@ -113,7 +101,9 @@ class TeslaMateABRP:
         # Set up authentication if needed
         if self.config.get("MQTTUSERNAME"):
             if self.config.get("MQTTPASSWORD"):
-                logging.debug(f"Using MQTT username: {self.config.get('MQTTUSERNAME')} and password '******'")
+                logging.debug(
+                    f"Using MQTT username: {self.config.get('MQTTUSERNAME')} and password '******'"
+                )
                 self.client.username_pw_set(self.config.get("MQTTUSERNAME"), self.config.get("MQTTPASSWORD"))
             else:
                 logging.debug(f"Using MQTT username: {self.config.get('MQTTUSERNAME')}")
@@ -171,10 +161,13 @@ class TeslaMateABRP:
             self.process_message(topic_name, payload)
 
         except Exception as e:
-            logging.critical(f"Unexpected exception while processing message: {type(e).__name__} - {e}, topic: {message.topic}, payload: {message.payload}")
+            logging.critical(
+                f"Unexpected exception while processing message: {type(e).__name__} - {e}, "
+                f"topic: {message.topic}, payload: {message.payload}"
+            )
 
     def process_message(self, topic: str, payload: str):
-        """Process individual MQTT message based on topic name"""
+        """Process individual MQTT message based on topic name."""
 
         # Skip empty payloads for most topics
         if not payload and topic not in ["shift_state", "state"]:
@@ -291,10 +284,11 @@ class TeslaMateABRP:
 
         # Calculate accurate power on AC charging
         if self.data["is_charging"] and not self.data["is_dcfc"] and "voltage" in self.data and "current" in self.data:
-            self.data["power"] = float(self.data["current"] * self.data["voltage"] * self.charger_phases) / 1000.0 * -1
+            self.data["power"] = (float(self.data["current"] * self.data["voltage"] * self.charger_phases) 
+                             / 1000.0 * -1)
 
     def handle_state_change(self, state: str):
-        """Update car state and relevant data fields"""
+        """Update car state and relevant data fields."""
         if state == "driving":
             self.data["is_parked"] = False
             self.data["is_charging"] = False
@@ -313,7 +307,7 @@ class TeslaMateABRP:
             self.data["is_dcfc"] = False
 
     def find_car_model(self):
-        """Determine car model from TeslaMate data"""
+        """Determine car model from TeslaMate data."""
         sleep(10)  # Wait to receive initial messages
 
         # Handle Model 3 and Y using mapping dictionary
@@ -324,18 +318,22 @@ class TeslaMateABRP:
             self.data["car_model"] = f"{self.data['model'].lower()}{self.data['trim_badging'].lower()}"
         # Log warning for unknown models
         else:
-            logging.warning(f"Your {self.data['model']} trim could not be automatically determined. "
-                          f"Trim reported as: {self.data['trim_badging']}.")
+            logging.warning(
+                f"Your {self.data['model']} trim could not be automatically determined. "
+                f"Trim reported as: {self.data['trim_badging']}."
+            )
             return
 
         if self.data["car_model"]:
             logging.info(f"Car model automatically determined as: {self.data['car_model']}.")
         else:
-            logging.warning("Car model could not be automatically determined, "
-                          "please set it through the CLI or environment var according to the documentation for best results.")
+            logging.warning(
+                "Car model could not be automatically determined, "
+                "please set it through the CLI or environment var according to the documentation for best results."
+            )
 
     def publish_to_mqtt(self, data_object: Dict[str, Any]):
-        """Publish data to MQTT topics"""
+        """Publish data to MQTT topics."""
         # Only publish if base_topic is set
         if not self.base_topic:
             return
@@ -353,7 +351,7 @@ class TeslaMateABRP:
                 logging.error(f"Failed to publish to MQTT: {e}")
 
     def update_abrp(self):
-        """Send data to ABRP API"""
+        """Send data to ABRP API."""
         try:
             headers = {"Authorization": f"APIKEY {APIKEY}"}
             body = {"tlm": self.data}
@@ -388,17 +386,19 @@ class TeslaMateABRP:
                 self.publish_to_mqtt({f"{self.prefix}_post_exception": str(ex)})
                 self.publish_to_mqtt({f"{self.prefix}_post_last_exception": self.nice_now()})
         except Exception as ex:
-            logging.critical(f"Unexpected exception while POSTing to ABRP API: {type(ex).__name__} - {ex}")
+            logging.critical(
+                f"Unexpected exception while POSTing to ABRP API: {type(ex).__name__} - {ex}"
+            )
             if self.base_topic:
                 self.publish_to_mqtt({f"{self.prefix}_post_exception": str(ex)})
                 self.publish_to_mqtt({f"{self.prefix}_post_last_exception": self.nice_now()})
 
     def nice_now(self) -> str:
-        """Return a formatted timestamp"""
+        """Return a formatted timestamp."""
         return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d %H:%M:%S")
 
     def update_timely(self):
-        """Update ABRP based on car state and timers"""
+        """Update ABRP based on car state and timers."""
         i = -1
         while True:
             i += 1
@@ -441,7 +441,7 @@ class TeslaMateABRP:
             self.prev_state = self.state
 
     def handle_parked_state(self, counter: int):
-        """Handle data updates when car is parked"""
+        """Handle data updates when car is parked."""
         # Reset power and speed if they're not zero
         if self.data["power"] != 0:
             self.data["power"] = 0.0
@@ -452,7 +452,7 @@ class TeslaMateABRP:
             self.data.pop("kwh_charged", None)
  
     def run(self):
-        """Main entry point to run the application"""
+        """Main entry point to run the application."""
         # If car model not provided, try to determine it
         if not self.config.get("CARMODEL"):
             self.find_car_model()
@@ -472,7 +472,7 @@ class TeslaMateABRP:
             logging.info("Shutdown complete.")
 
 def get_docker_secret(secret_name: str) -> Optional[str]:
-    """Read a secret from Docker secrets directory"""
+    """Read a secret from Docker secrets directory."""
     file_path = f"/run/secrets/{secret_name}"
     if os.path.isfile(file_path):
         try:
@@ -508,9 +508,9 @@ def get_docker_secret(secret_name: str) -> Optional[str]:
              help="Don't send LAT and LON to ABRP")
 def main(user_token, car_number, mqtt_server, mqtt_username, mqtt_password, mqtt_port,
          car_model, status_topic, debug, use_username, use_auth, use_tls, skip_location):
-    """TeslaMate MQTT to ABRP Bridge
+    """teslamate-abrp
 
-    A tool to send TeslaMate data to ABRP via MQTT.
+    A slightly convoluted way of getting your vehicle data from TeslaMate to A Better Route Planner.
     
     Arguments can be provided as command-line arguments or as environment variables.
     """

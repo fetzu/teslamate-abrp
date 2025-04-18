@@ -102,46 +102,6 @@ def test_parse_config_with_base_topic(mock_args_with_base_topic):
     assert abrp.base_topic == 'tesla/abrp/status'
     assert abrp.state_topic == 'tesla/abrp/status/_tm2abrp_status'
     
-def test_get_docker_secret():
-    # Test when secret file exists
-    with patch('os.path.isfile', return_value=True):
-        with patch('builtins.open', mock_open(read_data="secret_value\n")):
-            with patch('teslamate_mqtt2abrp.TeslaMateABRP.setup_mqtt_client'):
-                abrp = TeslaMateABRP({
-                    "DEBUG": False,
-                    "MQTTUSERNAME": None,
-                    "MQTTPASSWORD": None,
-                    "MQTTTLS": False,
-                    "SKIPLOCATION": False,
-                    "USERTOKEN": 'test',
-                    "CARNUMBER": '1',
-                    "MQTTSERVER": 'test',
-                    "MQTTPORT": '1883',
-                    "CARMODEL": None,
-                    "BASETOPIC": None
-                })
-                secret = abrp.get_docker_secret('test_secret')
-                assert secret == 'secret_value'
-    
-    # Test when secret file doesn't exist
-    with patch('os.path.isfile', return_value=False):
-        with patch('teslamate_mqtt2abrp.TeslaMateABRP.setup_mqtt_client'):
-            abrp = TeslaMateABRP({
-                "DEBUG": False,
-                "MQTTUSERNAME": None,
-                "MQTTPASSWORD": None,
-                "MQTTTLS": False,
-                "SKIPLOCATION": False,
-                "USERTOKEN": 'test',
-                "CARNUMBER": '1',
-                "MQTTSERVER": 'test',
-                "MQTTPORT": '1883',
-                "CARMODEL": None,
-                "BASETOPIC": None
-            })
-            secret = abrp.get_docker_secret('test_secret')
-            assert secret is None
-
 def test_process_message(teslamate_abrp):
     # Test normal message processing
     teslamate_abrp.process_message("model", "3")
