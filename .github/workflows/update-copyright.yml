@@ -6,9 +6,15 @@ on:
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
+# Set default permissions as restrictive as possible
+permissions: {}
+
 jobs:
   update-license-year:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
     steps:
       - uses: actions/checkout@v4
         with:
