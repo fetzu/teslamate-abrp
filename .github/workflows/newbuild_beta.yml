@@ -6,10 +6,16 @@ on:
       - 'prereleased'
   workflow_dispatch:  # Allow manual triggering
 
+# Set default permissions as restrictive as possible
+permissions: {}
+
 jobs:
   test:
     name: Test Python Application
     runs-on: ubuntu-latest
+    # Only needs read permission for checking out code and running tests
+    permissions:
+      contents: read
     steps:
       - name: Check out the repo
         uses: actions/checkout@v4
