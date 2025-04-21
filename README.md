@@ -16,6 +16,9 @@ A bridge to send your Tesla vehicle data from [TeslaMate](https://github.com/tes
 - Secure MQTT options for authentication and (MQTT)TLS encryption
 - Support for Docker secrets management
 - Optional location anonymization
+- Alpha (bleeding-edge) image is available at fetzu/teslamate-abrp:alpha
+- Beta (pre-release) image is available at fetzu/teslamate-abrp:beta
+
 
 ## Setup Guide
 
