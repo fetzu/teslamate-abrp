@@ -613,7 +613,6 @@ def test_main_with_click_mocked(mock_command):
                     car_model=None,
                     status_topic=None,
                     debug=False,
-                    use_username=False,
                     use_auth=False,
                     use_tls=False,
                     skip_location=False
@@ -665,7 +664,6 @@ def test_main_missing_required_args_direct():
                         car_model=None,
                         status_topic=None,
                         debug=False,
-                        use_username=False,
                         use_auth=False,
                         use_tls=False,
                         skip_location=False
@@ -691,7 +689,6 @@ def test_main_missing_required_args_direct():
                         car_model=None,
                         status_topic=None,
                         debug=False,
-                        use_username=False,
                         use_auth=False,
                         use_tls=False,
                         skip_location=False
@@ -728,7 +725,6 @@ def test_main_with_docker_secrets_mocked_click(mock_command):
                     car_model=None,
                     status_topic=None,
                     debug=False,
-                    use_username=False,
                     use_auth=True,  # Enable auth but don't provide password
                     use_tls=False,
                     skip_location=False
@@ -776,7 +772,6 @@ def test_main_run_exceptions_with_click_mock(mock_command):
                 car_model=None,
                 status_topic=None,
                 debug=False,
-                use_username=False,
                 use_auth=False,
                 use_tls=False,
                 skip_location=False
@@ -800,7 +795,6 @@ def test_main_run_exceptions_with_click_mock(mock_command):
                 car_model=None,
                 status_topic=None,
                 debug=False,
-                use_username=False,
                 use_auth=False,
                 use_tls=False,
                 skip_location=False

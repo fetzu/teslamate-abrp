@@ -126,6 +126,13 @@ class TeslaMateABRP:
         mqtt_port = self.config.get("MQTTPORT", DEFAULT_MQTT_PORT)
         mqtt_server = self.config.get("MQTTSERVER")
         
+        # Convert port to integer
+        try:
+            mqtt_port = int(mqtt_port)
+        except (ValueError, TypeError):
+            logging.warning(f"Invalid MQTT port provided: {mqtt_port}. Using default: {DEFAULT_MQTT_PORT}")
+            mqtt_port = DEFAULT_MQTT_PORT
+        
         logging.debug(f"Attempting to connect to MQTT server: {mqtt_server}:{mqtt_port}")
         
         try:
