@@ -860,6 +860,7 @@ def test_process_message_comprehensive(teslamate_abrp):
     teslamate_abrp.process_message("charger_actual_current", "invalid")
     teslamate_abrp.process_message("charger_voltage", "invalid")
     teslamate_abrp.process_message("usable_battery_level", "invalid")
+    teslamate_abrp.process_message("battery_level", "invalid")  # Add test for battery_level
     teslamate_abrp.process_message("charger_phases", "invalid")
     
     # Test charger_power with edge cases
@@ -875,6 +876,18 @@ def test_process_message_comprehensive(teslamate_abrp):
     teslamate_abrp.process_message("charger_voltage", "0")
     teslamate_abrp.process_message("charger_voltage", "3")  # Below threshold
     teslamate_abrp.process_message("charger_voltage", "220")  # Above threshold
+    
+    # Test battery level fallback (add this section)
+    teslamate_abrp.has_usable_battery_level = False
+    teslamate_abrp.process_message("battery_level", "65")
+    assert teslamate_abrp.data["soc"] == 65
+    
+    teslamate_abrp.process_message("usable_battery_level", "75")
+    assert teslamate_abrp.data["soc"] == 75
+    assert teslamate_abrp.has_usable_battery_level is True
+    
+    teslamate_abrp.process_message("battery_level", "85")
+    assert teslamate_abrp.data["soc"] == 75  # Should not change
     
     # Test shift_state with all possible values
     teslamate_abrp.process_message("shift_state", "P")
@@ -1256,6 +1269,33 @@ def test_handle_parked_state_comprehensive(teslamate_abrp):
     assert teslamate_abrp.data["power"] == 0.0
     assert teslamate_abrp.data["speed"] == 0
     assert "kwh_charged" not in teslamate_abrp.data
+
+def test_battery_level_fallback(teslamate_abrp):
+    """Test that battery_level is used as fallback when usable_battery_level is not available"""
+    # Test with only battery_level
+    teslamate_abrp.process_message("battery_level", "75")
+    assert teslamate_abrp.data["soc"] == 75
+    assert teslamate_abrp.has_usable_battery_level is False
+    
+    # Test with both - usable_battery_level should take precedence
+    teslamate_abrp.process_message("usable_battery_level", "70")
+    assert teslamate_abrp.data["soc"] == 70
+    assert teslamate_abrp.has_usable_battery_level is True
+    
+    # Test that battery_level is ignored once usable_battery_level has been received
+    teslamate_abrp.process_message("battery_level", "80")
+    assert teslamate_abrp.data["soc"] == 70  # Should not change
+    
+    # Test with invalid values
+    teslamate_abrp.process_message("battery_level", "invalid")
+    assert teslamate_abrp.data["soc"] == 70  # Should not change
+
+def test_init_has_usable_battery_level_flag(mock_args):
+    """Test that the has_usable_battery_level flag is initialized to False"""
+    with patch('teslamate_mqtt2abrp.TeslaMateABRP.setup_mqtt_client'):
+        abrp = TeslaMateABRP(mock_args)
+        assert hasattr(abrp, 'has_usable_battery_level')
+        assert abrp.has_usable_battery_level is False
 
 if __name__ == "__main__":
     pytest.main()

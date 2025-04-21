@@ -56,6 +56,7 @@ class TeslaMateABRP:
         self.state = ""
         self.prev_state = ""
         self.charger_phases = 1
+        self.has_usable_battery_level = False  # Flag to track if we've received usable_battery_level
         
         # Default data structure for ABRP
         self.data = {
@@ -81,110 +82,6 @@ class TeslaMateABRP:
             "kwh_charged": 0,
             "heading": 0
         }
-
-    def configure_logging(self):
-        log_level = logging.DEBUG if self.config.get("DEBUG") else logging.INFO
-        logging.basicConfig(
-            format='%(asctime)s: [%(levelname)s] %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S',
-            level=log_level
-        )
-        if log_level == logging.DEBUG:
-            logging.debug("Logging level set to DEBUG.")
-
-    def setup_mqtt_client(self):
-        self.client = mqtt.Client(
-            mqtt.CallbackAPIVersion.VERSION2, 
-            f"teslamateToABRP-{self.config.get('CARNUMBER')}"
-        )
-
-        # Set up authentication with clearer logging
-        if self.config.get("MQTTUSERNAME") and self.config.get("MQTTPASSWORD"):
-            logging.debug(f"Using MQTT authentication with username: {self.config.get('MQTTUSERNAME')} and password")
-            self.client.username_pw_set(self.config.get('MQTTUSERNAME'), self.config.get('MQTTPASSWORD'))
-        elif self.config.get("MQTTUSERNAME"):
-            logging.debug(f"Using MQTT username only: {self.config.get('MQTTUSERNAME')} (no password)")
-            self.client.username_pw_set(self.config.get('MQTTUSERNAME'))
-        else:
-            logging.debug("No MQTT authentication configured")
-
-        # Set up TLS if needed
-        if self.config.get("MQTTTLS"):
-            logging.debug("Using TLS with MQTT")
-            self.client.tls_set()
-
-        # Set up last will if base topic is set
-        if self.base_topic:
-            logging.debug(f"Using MQTT base topic: {self.base_topic} for last will")
-            self.client.will_set(self.state_topic, payload="offline", qos=2, retain=True)
-
-        # Set up callbacks
-        self.client.on_connect = self.on_connect
-        self.client.on_message = self.on_message
-
-        # Connect to MQTT server with better error handling
-        mqtt_port = self.config.get("MQTTPORT", DEFAULT_MQTT_PORT)
-        mqtt_server = self.config.get("MQTTSERVER")
-        
-        # Convert port to integer
-        try:
-            mqtt_port = int(mqtt_port)
-        except (ValueError, TypeError):
-            logging.warning(f"Invalid MQTT port provided: {mqtt_port}. Using default: {DEFAULT_MQTT_PORT}")
-            mqtt_port = DEFAULT_MQTT_PORT
-        
-        logging.debug(f"Attempting to connect to MQTT server: {mqtt_server}:{mqtt_port}")
-        
-        try:
-            self.client.connect(mqtt_server, mqtt_port)
-            self.client.loop_start()
-            logging.debug("MQTT client connection started successfully")
-        except ConnectionRefusedError:
-            error_msg = f"Connection refused to MQTT server {mqtt_server}:{mqtt_port}. Check if the server is running and accessible."
-            logging.critical(error_msg)
-            sys.exit(error_msg)
-        except TimeoutError:
-            error_msg = f"Connection timeout to MQTT server {mqtt_server}:{mqtt_port}. Check network connectivity and firewall settings."
-            logging.critical(error_msg)
-            sys.exit(error_msg)
-        except Exception as e:
-            error_msg = f"Failed to connect to MQTT server: {e}"
-            logging.critical(error_msg)
-            sys.exit(error_msg)
-
-    def on_connect(self, client, userdata, flags, reason_code, properties):
-        result_str = mqtt.connack_string(reason_code)
-        logging.info(f"MQTT Connection returned result: {result_str} (reason code {reason_code}).")
-        
-        # Improved authentication failure detection
-        if reason_code == 5:  # Authentication error code in MQTT v5
-            logging.critical("MQTT Authentication failed. Check your username and password.")
-            sys.exit("MQTT Authentication failed. Check your username and password.")
-        elif reason_code != 0:
-            logging.critical(f"Could not connect to MQTT server. Reason: {result_str}")
-            sys.exit(f"Could not connect to MQTT server. Reason: {result_str}")
-        
-        logging.debug("MQTT connection successful, subscribing to topics...")
-        client.subscribe(f"teslamate/cars/{self.config.get('CARNUMBER')}/#")
-        logging.debug(f"Subscribed to teslamate/cars/{self.config.get('CARNUMBER')}/#")
-
-        # Only publish online status if base_topic is set
-        if self.base_topic:
-            client.publish(self.state_topic, payload="online", qos=2, retain=True)
-            logging.debug(f"Published 'online' status to {self.state_topic}")
-
-    def on_message(self, client, userdata, message):
-        try:
-            payload = str(message.payload.decode("utf-8"))
-            topic_name = message.topic.split('/')[-1]
-            
-            self.process_message(topic_name, payload)
-
-        except Exception as e:
-            logging.critical(
-                f"Unexpected exception while processing message: {type(e).__name__} - {e}, "
-                f"topic: {message.topic}, payload: {message.payload}"
-            )
 
     def process_message(self, topic: str, payload: str):
         """Process individual MQTT message based on topic name."""
@@ -286,6 +183,14 @@ class TeslaMateABRP:
         elif topic == "usable_battery_level":
             try:
                 self.data["soc"] = int(payload)
+                self.has_usable_battery_level = True
+            except ValueError:
+                pass
+        elif topic == "battery_level":
+            try:
+                # Only use battery_level if we haven't received usable_battery_level
+                if not self.has_usable_battery_level:
+                    self.data["soc"] = int(payload)
             except ValueError:
                 pass
         elif topic == "charge_energy_added":
