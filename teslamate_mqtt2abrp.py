@@ -98,16 +98,15 @@ class TeslaMateABRP:
             f"teslamateToABRP-{self.config.get('CARNUMBER')}"
         )
 
-        # Set up authentication if needed
-        if self.config.get("MQTTUSERNAME"):
-            if self.config.get("MQTTPASSWORD"):
-                logging.debug(
-                    f"Using MQTT username: {self.config.get('MQTTUSERNAME')} and password '******'"
-                )
-                self.client.username_pw_set(self.config.get("MQTTUSERNAME"), self.config.get("MQTTPASSWORD"))
-            else:
-                logging.debug(f"Using MQTT username: {self.config.get('MQTTUSERNAME')}")
-                self.client.username_pw_set(self.config.get("MQTTUSERNAME"))
+        # Set up authentication with clearer logging
+        if self.config.get("MQTTUSERNAME") and self.config.get("MQTTPASSWORD"):
+            logging.debug(f"Using MQTT authentication with username: {self.config.get('MQTTUSERNAME')} and password")
+            self.client.username_pw_set(self.config.get('MQTTUSERNAME'), self.config.get('MQTTPASSWORD'))
+        elif self.config.get("MQTTUSERNAME"):
+            logging.debug(f"Using MQTT username only: {self.config.get('MQTTUSERNAME')} (no password)")
+            self.client.username_pw_set(self.config.get('MQTTUSERNAME'))
+        else:
+            logging.debug("No MQTT authentication configured")
 
         # Set up TLS if needed
         if self.config.get("MQTTTLS"):
@@ -123,35 +122,49 @@ class TeslaMateABRP:
         self.client.on_connect = self.on_connect
         self.client.on_message = self.on_message
 
-        # Connect to MQTT server
+        # Connect to MQTT server with better error handling
+        mqtt_port = self.config.get("MQTTPORT", DEFAULT_MQTT_PORT)
+        mqtt_server = self.config.get("MQTTSERVER")
+        
+        logging.debug(f"Attempting to connect to MQTT server: {mqtt_server}:{mqtt_port}")
+        
         try:
-            logging.debug(f"Trying to connect to {self.config.get('MQTTSERVER')}:{self.config.get('MQTTPORT')}")
-            # Convert MQTTPORT to int if it's a string
-            mqtt_port = self.config.get("MQTTPORT")
-            if isinstance(mqtt_port, str):
-                try:
-                    mqtt_port = int(mqtt_port)
-                except ValueError:
-                    mqtt_port = DEFAULT_MQTT_PORT
-            elif mqtt_port is None:
-                mqtt_port = DEFAULT_MQTT_PORT
-                
-            self.client.connect(self.config.get("MQTTSERVER"), mqtt_port)
+            self.client.connect(mqtt_server, mqtt_port)
             self.client.loop_start()
+            logging.debug("MQTT client connection started successfully")
+        except ConnectionRefusedError:
+            error_msg = f"Connection refused to MQTT server {mqtt_server}:{mqtt_port}. Check if the server is running and accessible."
+            logging.critical(error_msg)
+            sys.exit(error_msg)
+        except TimeoutError:
+            error_msg = f"Connection timeout to MQTT server {mqtt_server}:{mqtt_port}. Check network connectivity and firewall settings."
+            logging.critical(error_msg)
+            sys.exit(error_msg)
         except Exception as e:
-            logging.critical(f"Failed to connect to MQTT server: {e}")
-            sys.exit(f"Failed to connect to MQTT server: {e}")
+            error_msg = f"Failed to connect to MQTT server: {e}"
+            logging.critical(error_msg)
+            sys.exit(error_msg)
 
     def on_connect(self, client, userdata, flags, reason_code, properties):
-        logging.info(f"MQTT Connection returned result: {mqtt.connack_string(reason_code)} (reason code {reason_code}).")
-        if reason_code != 0:
-            sys.exit("Could not connect to MQTT server")
+        result_str = mqtt.connack_string(reason_code)
+        logging.info(f"MQTT Connection returned result: {result_str} (reason code {reason_code}).")
         
+        # Improved authentication failure detection
+        if reason_code == 5:  # Authentication error code in MQTT v5
+            logging.critical("MQTT Authentication failed. Check your username and password.")
+            sys.exit("MQTT Authentication failed. Check your username and password.")
+        elif reason_code != 0:
+            logging.critical(f"Could not connect to MQTT server. Reason: {result_str}")
+            sys.exit(f"Could not connect to MQTT server. Reason: {result_str}")
+        
+        logging.debug("MQTT connection successful, subscribing to topics...")
         client.subscribe(f"teslamate/cars/{self.config.get('CARNUMBER')}/#")
+        logging.debug(f"Subscribed to teslamate/cars/{self.config.get('CARNUMBER')}/#")
 
         # Only publish online status if base_topic is set
         if self.base_topic:
             client.publish(self.state_topic, payload="online", qos=2, retain=True)
+            logging.debug(f"Published 'online' status to {self.state_topic}")
 
     def on_message(self, client, userdata, message):
         try:
@@ -498,16 +511,14 @@ def get_docker_secret(secret_name: str) -> Optional[str]:
              help='MQTT topic to publish status messages to')
 @click.option('-d', '--debug', is_flag=True, envvar='TM2ABRP_DEBUG',
              help='Debug mode (set logging level to DEBUG)')
-@click.option('-l', '--use-username', 'use_username', is_flag=True,
-             help='Use username to connect to MQTT server')
-@click.option('-p', '--use-auth', 'use_auth', is_flag=True,
-             help='Use authentication (user and password) to connect to MQTT server')
+@click.option('-a', '--auth', 'use_auth', is_flag=True,
+             help='Use authentication (username and password) to connect to MQTT server')
 @click.option('-s', '--use-tls', 'use_tls', is_flag=True, envvar='MQTT_TLS',
              help='Use TLS to connect to MQTT server')
 @click.option('-x', '--skip-location', 'skip_location', is_flag=True, envvar='SKIP_LOCATION',
              help="Don't send LAT and LON to ABRP")
 def main(user_token, car_number, mqtt_server, mqtt_username, mqtt_password, mqtt_port,
-         car_model, status_topic, debug, use_username, use_auth, use_tls, skip_location):
+         car_model, status_topic, debug, use_auth, use_tls, skip_location):
     """teslamate-abrp
 
     A slightly convoluted way of getting your vehicle data from TeslaMate to A Better Route Planner.
@@ -522,11 +533,14 @@ def main(user_token, car_number, mqtt_server, mqtt_username, mqtt_password, mqtt
         docker_token = get_docker_secret('USER_TOKEN')
         if docker_token:
             user_token = docker_token
+            logging.debug("Using USER_TOKEN from Docker secret")
 
-    if use_auth and not mqtt_password:
+    # Check for MQTT password in Docker secrets
+    if not mqtt_password:
         docker_password = get_docker_secret('MQTT_PASSWORD')
         if docker_password:
             mqtt_password = docker_password
+            logging.debug("Using MQTT_PASSWORD from Docker secret")
 
     # Required arguments checks
     if not mqtt_server:
@@ -541,8 +555,16 @@ def main(user_token, car_number, mqtt_server, mqtt_username, mqtt_password, mqtt
     config["MQTTSERVER"] = mqtt_server
     config["USERTOKEN"] = user_token
     config["CARNUMBER"] = car_number or DEFAULT_CAR_NUMBER
-    config["MQTTPORT"] = mqtt_port or DEFAULT_MQTT_PORT
-    config["MQTTUSERNAME"] = mqtt_username if use_username or use_auth else None
+    
+    # Convert MQTT port properly with warning
+    try:
+        config["MQTTPORT"] = int(mqtt_port) if mqtt_port else DEFAULT_MQTT_PORT
+    except (ValueError, TypeError):
+        logging.warning(f"Invalid MQTT port provided: {mqtt_port}. Using default: {DEFAULT_MQTT_PORT}")
+        config["MQTTPORT"] = DEFAULT_MQTT_PORT
+    
+    # Handle authentication more clearly
+    config["MQTTUSERNAME"] = mqtt_username
     config["MQTTPASSWORD"] = mqtt_password if use_auth else None
     config["MQTTTLS"] = use_tls
     config["CARMODEL"] = car_model
