@@ -1,4 +1,4 @@
-name: Build :beta (v3)
+name: :beta
 
 on:
   release:

@@ -1,4 +1,4 @@
-name: Build :latest (v3)
+name: :latest
 
 on:
   release:
