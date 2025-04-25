@@ -7,8 +7,7 @@ on:
       - '**.md'
       - 'docs/**'
   schedule:
-    - cron: "37 1 */1,*/14 *"  # Fortnightly rebuild
-  workflow_dispatch:
+      - cron: "37 1 */1,*/14 * *"  # Fortnightly rebuild  workflow_dispatch:
 # Set default permissions as restrictive as possible
 permissions: {}
 jobs:
