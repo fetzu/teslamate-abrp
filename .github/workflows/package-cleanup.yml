@@ -1,0 +1,24 @@
+name: Package Cleanup
+
+on:
+  schedule:
+    - cron: '52 1 */1,*/14 * *'
+  workflow_dispatch:
+
+jobs:
+  cleanup-packages:
+    runs-on: ubuntu-latest
+    permissions:
+      # Permissions needed to delete packages
+      packages: write
+      contents: read
+    
+    steps:   
+      - name: Delete untagged package versions older than 31 days
+        uses: actions/delete-package-versions@v4
+        with:
+          package-name: '*'             # Target all packages in the repository
+          min-versions-to-keep: 3       # Keep the last 3 untagged versions just in case
+          delete-only-untagged-versions: 'true'
+          age: "31"                     # Only delete versions older than 31 days
+          token: ${{ secrets.GITHUB_TOKEN }}
