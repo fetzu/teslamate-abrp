@@ -18,6 +18,7 @@ jobs:
         uses: actions/delete-package-versions@v5
         with:
           package-name: '*'             # Target all packages in the repository
+          package-type: 'container'
           min-versions-to-keep: 5       # Keep the last 5 untagged versions just in case
           delete-only-untagged-versions: 'true'
           token: ${{ secrets.GITHUB_TOKEN }}
