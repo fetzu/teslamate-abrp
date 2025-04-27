@@ -16,7 +16,6 @@ permissions: {}
 jobs:
   build_and_push:
     name: Build and Push Docker image
-    needs: test
     runs-on: ubuntu-latest
     permissions:
       packages: write    # Needed to push to GitHub Container Registry
