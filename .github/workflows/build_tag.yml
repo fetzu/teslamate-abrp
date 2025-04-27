@@ -1,0 +1,121 @@
+# This workflow can trigger a re-build and re-publish of a specific tag to GHCR
+# This is mostly to undo a big woospsie... (:
+name: Build specitif tag/version (GHCR ONLY)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build and push (leave empty for branch-based build)'
+        required: false
+        type: string
+
+# Set default permissions as restrictive as possible
+permissions: {}
+
+jobs:
+  build_and_push:
+    name: Build and Push Docker image
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write    # Needed to push to GitHub Container Registry
+      contents: read     # Needed to check out the code
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+        
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3.6.0
+        
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3.10.0
+      
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Extract tag name
+        id: extract_tag
+        if: github.event.inputs.tag != ''
+        run: |
+          # Remove 'refs/tags/' prefix if present in the input
+          CLEAN_TAG="${{ github.event.inputs.tag }}"
+          CLEAN_TAG="${CLEAN_TAG#refs/tags/}"
+          echo "TAG_NAME=${CLEAN_TAG}" >> $GITHUB_OUTPUT
+          echo "Building for tag: ${CLEAN_TAG}"
+      
+      - name: Extract metadata for releases
+        id: meta-release
+        if: github.event_name == 'release'
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=latest
+      
+      - name: Extract metadata for specific tag
+        id: meta-tag
+        if: github.event.inputs.tag != ''
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=${{ steps.extract_tag.outputs.TAG_NAME }}
+            type=raw,value=latest,enable=${{ steps.extract_tag.outputs.TAG_NAME == 'main' }}
+      
+      - name: Extract metadata for non-releases
+        id: meta-non-release
+        if: github.event_name != 'release' && github.event.inputs.tag == ''
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,format=long
+      
+      - name: Build and push Docker images for release
+        if: github.event_name == 'release'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          push: true
+          tags: ${{ steps.meta-release.outputs.tags }}
+          labels: ${{ steps.meta-release.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      
+      - name: Build and push Docker images for specific tag
+        if: github.event.inputs.tag != ''
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          push: true
+          tags: ${{ steps.meta-tag.outputs.tags }}
+          labels: ${{ steps.meta-tag.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      
+      - name: Build and push Docker images for workflow dispatch
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.tag == ''
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          push: true
+          tags: ${{ steps.meta-non-release.outputs.tags }}
+          labels: ${{ steps.meta-non-release.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
