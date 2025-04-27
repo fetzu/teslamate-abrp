@@ -15,7 +15,7 @@ jobs:
     
     steps:   
       - name: Delete untagged package versions older than 31 days
-        uses: actions/delete-package-versions@v4
+        uses: actions/delete-package-versions@v5
         with:
           package-name: '*'             # Target all packages in the repository
           min-versions-to-keep: 3       # Keep the last 3 untagged versions just in case
