@@ -17,8 +17,8 @@ jobs:
       - name: Delete untagged packages (keep only last 5)
         uses: actions/delete-package-versions@v5
         with:
-          package-name: '*'             # Target all packages in the repository
+          package-name: 'teslamate-abrp'
           package-type: 'container'
-          min-versions-to-keep: 5       # Keep the last 5 untagged versions just in case
+          min-versions-to-keep: 5
           delete-only-untagged-versions: 'true'
           token: ${{ secrets.GITHUB_TOKEN }}
