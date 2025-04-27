@@ -14,11 +14,10 @@ jobs:
       contents: read
     
     steps:   
-      - name: Delete untagged package versions older than 31 days
+      - name: Delete untagged packages (keep only last 5)
         uses: actions/delete-package-versions@v5
         with:
           package-name: '*'             # Target all packages in the repository
-          min-versions-to-keep: 3       # Keep the last 3 untagged versions just in case
+          min-versions-to-keep: 5       # Keep the last 5 untagged versions just in case
           delete-only-untagged-versions: 'true'
-          age: "31"                     # Only delete versions older than 31 days
           token: ${{ secrets.GITHUB_TOKEN }}
