@@ -1,4 +1,4 @@
-FROM python:3.13-alpine
+FROM python:3.14-alpine
 
 # Add security labels
 LABEL org.opencontainers.image.vendor="TeslaMate-ABRP" \
