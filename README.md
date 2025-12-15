@@ -33,9 +33,12 @@ A bridge to send your Tesla vehicle data from [TeslaMate](https://github.com/tes
 ### Getting an ABRP User Token
 
 1. Log in to the ABRP web app or mobile app
-2. Navigate to your car settings
-3. Use the "generic" card (last one at the bottom) to generate your user token
-4. Save this token securely - you'll need it to configure teslamate-abrp
+2. Navigate to Settings (burger menu)
+3. Under "Plan settings" tap/click the cog wheel of your car 
+4. Select "Edit connection"
+5. Select "Link" in the "Generic" box under In-car live data 
+6. Token will be displayed
+7. Save this token securely - you'll need it to configure teslamate-abrp
 
 ### Option 1: Docker Setup (Recommended)
 
