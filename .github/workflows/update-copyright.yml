@@ -23,4 +23,5 @@ jobs:
         with:
           commitTitle: 'chore: update copyright year(s) in LICENSE'
           token: ${{ secrets.GITHUB_TOKEN }}
-          transform: (?<=Copyright \(c\) )(?<from>\d{4})?-(\d{4})
+          transform: '(?<=Copyright \(c\) )(\d{4}-)?\d{4}(?= fetzu and contributors)'
+
