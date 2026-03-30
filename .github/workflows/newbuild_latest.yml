@@ -55,7 +55,7 @@ jobs:
         run: pytest --cov=./ --cov-report=xml
       
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v6
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage.xml
@@ -73,19 +73,19 @@ jobs:
         uses: actions/checkout@v6
         
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3.7.0
+        uses: docker/setup-qemu-action@v4
         
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3.12.0
+        uses: docker/setup-buildx-action@v4
       
       - name: Log in to DockerHub
-        uses: docker/login-action@v3.7.0
+        uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
       
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3.7.0
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -94,7 +94,7 @@ jobs:
       - name: Extract metadata for releases
         id: meta-release
         if: github.event_name == 'release'
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: |
             fetzu/teslamate-abrp
@@ -106,7 +106,7 @@ jobs:
       - name: Extract metadata for non-releases
         id: meta-non-release
         if: github.event_name != 'release'
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: |
             fetzu/teslamate-abrp
@@ -117,7 +117,7 @@ jobs:
             type=sha,format=long
       
       - name: Build container for testing
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           load: true
@@ -126,7 +126,7 @@ jobs:
           cache-to: type=gha,mode=max
       
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@v0.35.0
         with:
           image-ref: teslamate-abrp:test
           format: 'table'
@@ -136,7 +136,7 @@ jobs:
       
       - name: Build and push Docker images for release
         if: github.event_name == 'release'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64,linux/arm/v7
@@ -148,7 +148,7 @@ jobs:
       
       - name: Build and push Docker images for testing
         if: github.event_name == 'workflow_dispatch'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64,linux/arm/v7
