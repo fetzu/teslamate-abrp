@@ -3,4 +3,4 @@ requests>=2.33.1,<2.34.0
 paho-mqtt>=2.1.0,<2.2.0
 
 certifi>=2026.4.22
-urllib3>=2.6.3
+urllib3>=2.7.0
