@@ -51,6 +51,11 @@ PARKED_STATES = ["parked", "online", "suspended", "asleep", "offline"]
 # Human-readable labels for the "updating every Ns" log line.
 STATE_LABELS = {"charging": "charging", "driving": "driving"}
 
+# Seconds to wait at startup for the model/trim_badging messages before giving
+# up on automatic car-model detection (used as a fallback; detection returns as
+# soon as both arrive).
+MODEL_DETECTION_TIMEOUT = 10
+
 # Tesla model ID mapping
 MODEL_MAPPINGS = {
     "3": {
@@ -145,6 +150,10 @@ class TeslaMateABRP:
         # Set from the paho callback thread (on_connect) to request a shutdown
         # that must happen on the main thread.
         self.fatal_error: Optional[str] = None
+        # Set once both model and trim_badging have been received, so
+        # find_car_model() can return as soon as the data arrives instead of
+        # blocking for a fixed delay.
+        self.model_data_ready = threading.Event()
 
         # Refresh rates (in seconds), validated with fallback to defaults
         self.refresh_rate_driving = validate_refresh_rate(
@@ -345,8 +354,10 @@ class TeslaMateABRP:
 
         if topic == "model":
             self.data["model"] = payload
+            self._maybe_signal_model_ready()
         elif topic == "trim_badging":
             self.data["trim_badging"] = payload
+            self._maybe_signal_model_ready()
         elif topic == "latitude" and not self.config.get("SKIPLOCATION"):
             try:
                 self.data["lat"] = float(payload)
@@ -494,9 +505,20 @@ class TeslaMateABRP:
             self.data["is_charging"] = False
             self.data["is_dcfc"] = False
 
+    def _maybe_signal_model_ready(self):
+        """Signal find_car_model() once both model and trim_badging are known."""
+        if self.data["model"] and self.data["trim_badging"]:
+            self.model_data_ready.set()
+
     def find_car_model(self):
         """Determine car model from TeslaMate data."""
-        sleep(10)  # Wait to receive initial messages
+        # Wait for the model + trim_badging messages (set by process_message),
+        # returning as soon as both arrive; fall back to the timeout otherwise.
+        if not self.model_data_ready.wait(timeout=MODEL_DETECTION_TIMEOUT):
+            logging.debug(
+                "Timed out waiting for model/trim_badging; "
+                "proceeding with whatever data has arrived."
+            )
 
         # Handle Model 3 and Y using mapping dictionary
         if self.data["model"] in MODEL_MAPPINGS and self.data["trim_badging"] in MODEL_MAPPINGS[self.data["model"]]:

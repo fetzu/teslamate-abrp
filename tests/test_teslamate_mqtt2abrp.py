@@ -156,35 +156,56 @@ def test_handle_state_change(teslamate_abrp):
     assert teslamate_abrp.data["is_dcfc"] == False
 
 def test_find_car_model(teslamate_abrp):
+    # Normally process_message sets this once model + trim arrive; here the test
+    # sets the data directly, so set the event so find_car_model doesn't wait.
+    teslamate_abrp.model_data_ready.set()
+
     # Test Model 3 detection
     teslamate_abrp.data["model"] = "3"
     teslamate_abrp.data["trim_badging"] = "74D"
-
-    # The code does `from time import sleep`, so the module-local binding
-    # teslamate_mqtt2abrp.sleep must be patched (patching time.sleep is a no-op
-    # here and would make each call really sleep 10s).
-    with patch('teslamate_mqtt2abrp.sleep'):
-        teslamate_abrp.find_car_model()
-
+    teslamate_abrp.find_car_model()
     assert teslamate_abrp.data["car_model"] == "3long_awd"
 
     # Test Model Y detection
     teslamate_abrp.data["model"] = "Y"
     teslamate_abrp.data["trim_badging"] = "P74D"
-
-    with patch('teslamate_mqtt2abrp.sleep'):
-        teslamate_abrp.find_car_model()
-
+    teslamate_abrp.find_car_model()
     assert teslamate_abrp.data["car_model"] == "tesla:my:19:bt37:perf"
 
     # Test Model S detection
     teslamate_abrp.data["model"] = "S"
     teslamate_abrp.data["trim_badging"] = "100d"
-
-    with patch('teslamate_mqtt2abrp.sleep'):
-        teslamate_abrp.find_car_model()
-    
+    teslamate_abrp.find_car_model()
     assert teslamate_abrp.data["car_model"] == "s100d"
+
+def test_process_message_signals_model_ready(teslamate_abrp):
+    """model_data_ready is set only once both model and trim_badging arrive."""
+    assert not teslamate_abrp.model_data_ready.is_set()
+    teslamate_abrp.process_message("model", "3")
+    assert not teslamate_abrp.model_data_ready.is_set()  # trim still missing
+    teslamate_abrp.process_message("trim_badging", "74D")
+    assert teslamate_abrp.model_data_ready.is_set()
+
+def test_find_car_model_returns_promptly_when_ready(teslamate_abrp):
+    """find_car_model returns immediately once the event is set (no 10s wait)."""
+    import time
+    teslamate_abrp.data["model"] = "3"
+    teslamate_abrp.data["trim_badging"] = "74D"
+    teslamate_abrp.model_data_ready.set()
+    start = time.monotonic()
+    teslamate_abrp.find_car_model()
+    assert time.monotonic() - start < 1.0
+    assert teslamate_abrp.data["car_model"] == "3long_awd"
+
+def test_find_car_model_falls_back_to_timeout(teslamate_abrp):
+    """When the event never fires, find_car_model uses the timeout path and still
+    determines the model from whatever data arrived."""
+    teslamate_abrp.data["model"] = "3"
+    teslamate_abrp.data["trim_badging"] = "74D"
+    with patch.object(teslamate_abrp.model_data_ready, 'wait', return_value=False) as mock_wait:
+        teslamate_abrp.find_car_model()
+        mock_wait.assert_called_once()
+    assert teslamate_abrp.data["car_model"] == "3long_awd"
 
 def test_update_abrp(teslamate_abrp):
     with patch('requests.post') as mock_post:
