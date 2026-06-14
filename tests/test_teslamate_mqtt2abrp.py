@@ -6,7 +6,15 @@ import sys
 import types
 import importlib
 from unittest.mock import patch, MagicMock, mock_open, call
-from teslamate_mqtt2abrp import TeslaMateABRP, DEFAULT_MQTT_PORT, main
+from teslamate_mqtt2abrp import (
+    TeslaMateABRP,
+    DEFAULT_MQTT_PORT,
+    DEFAULT_REFRESH_RATE_DRIVING,
+    DEFAULT_REFRESH_RATE_CHARGING,
+    DEFAULT_REFRESH_RATE_PARKED,
+    validate_refresh_rate,
+    main,
+)
 
 @pytest.fixture
 def mock_args():
@@ -616,7 +624,10 @@ def test_main_with_click_mocked(mock_command):
                     use_auth=False,
                     use_tls=False,
                     skip_location=False,
-                    verify_cert=True
+                    verify_cert=True,
+                    refresh_driving=None,
+                    refresh_charging=None,
+                    refresh_parked=None
                 )
                 
                 # Check TeslaMateABRP was instantiated with correct config
@@ -666,7 +677,10 @@ def test_main_missing_required_args_direct():
                         use_auth=False,
                         use_tls=False,
                         skip_location=False,
-                        verify_cert=True
+                        verify_cert=True,
+                        refresh_driving=None,
+                        refresh_charging=None,
+                        refresh_parked=None
                     )
                     pytest.fail("Expected MockExit exception")
                 except MockExit as e:
@@ -692,7 +706,10 @@ def test_main_missing_required_args_direct():
                         use_auth=False,
                         use_tls=False,
                         skip_location=False,
-                        verify_cert=True
+                        verify_cert=True,
+                        refresh_driving=None,
+                        refresh_charging=None,
+                        refresh_parked=None
                     )
                     pytest.fail("Expected MockExit exception")
                 except MockExit as e:
@@ -729,7 +746,10 @@ def test_main_with_docker_secrets_mocked_click(mock_command):
                     use_auth=True,  # Enable auth but don't provide password
                     use_tls=False,
                     skip_location=False,
-                    verify_cert=True
+                    verify_cert=True,
+                    refresh_driving=None,
+                    refresh_charging=None,
+                    refresh_parked=None
                 )
                 
                 # Check Docker secret was used for token
@@ -777,7 +797,10 @@ def test_main_run_exceptions_with_click_mock(mock_command):
                 use_auth=False,
                 use_tls=False,
                 skip_location=False,
-                verify_cert=True
+                verify_cert=True,
+                refresh_driving=None,
+                refresh_charging=None,
+                refresh_parked=None
             )
             
             # Should exit cleanly with code 0
@@ -801,7 +824,10 @@ def test_main_run_exceptions_with_click_mock(mock_command):
                 use_auth=False,
                 use_tls=False,
                 skip_location=False,
-                verify_cert=True
+                verify_cert=True,
+                refresh_driving=None,
+                refresh_charging=None,
+                refresh_parked=None
             )
             
             # Should exit with error code 1
@@ -1301,6 +1327,133 @@ def test_battery_level_fallback(teslamate_abrp):
 #        abrp = TeslaMateABRP(mock_args)
 #        assert hasattr(abrp, 'has_usable_battery_level')
 #        assert abrp.has_usable_battery_level is False
+
+# [ Refresh rate configuration tests (issue #86) ]
+def test_validate_refresh_rate():
+    """validate_refresh_rate should accept valid rates and fall back to defaults otherwise"""
+    # None means "not configured" -> use the default
+    assert validate_refresh_rate(None, 30, "parked") == 30
+    # Valid integers and integer-like strings are accepted
+    assert validate_refresh_rate(5, 1, "driving") == 5
+    assert validate_refresh_rate("12", 6, "charging") == 12
+    # Non-positive values are rejected (would break the modulo update loop)
+    assert validate_refresh_rate(0, 30, "parked") == 30
+    assert validate_refresh_rate(-5, 30, "parked") == 30
+    # Non-numeric values fall back to the default
+    assert validate_refresh_rate("abc", 6, "charging") == 6
+    assert validate_refresh_rate(1.5, 6, "charging") == 1  # int() truncates valid floats
+
+def test_refresh_rates_default(mock_args):
+    """When no refresh rates are configured, the documented defaults are used"""
+    with patch('teslamate_mqtt2abrp.mqtt.Client'):
+        abrp = TeslaMateABRP(mock_args)
+        assert abrp.refresh_rate_driving == DEFAULT_REFRESH_RATE_DRIVING
+        assert abrp.refresh_rate_charging == DEFAULT_REFRESH_RATE_CHARGING
+        assert abrp.refresh_rate_parked == DEFAULT_REFRESH_RATE_PARKED
+
+def test_refresh_rates_from_config(mock_args):
+    """Configured refresh rates override the defaults"""
+    config = mock_args.copy()
+    config["REFRESH_RATE_DRIVING"] = 5
+    config["REFRESH_RATE_CHARGING"] = 15
+    config["REFRESH_RATE_PARKED"] = 60
+    with patch('teslamate_mqtt2abrp.mqtt.Client'):
+        abrp = TeslaMateABRP(config)
+        assert abrp.refresh_rate_driving == 5
+        assert abrp.refresh_rate_charging == 15
+        assert abrp.refresh_rate_parked == 60
+
+def test_refresh_rates_invalid_config_falls_back(mock_args):
+    """Invalid configured refresh rates fall back to the defaults"""
+    config = mock_args.copy()
+    config["REFRESH_RATE_DRIVING"] = "not-a-number"
+    config["REFRESH_RATE_CHARGING"] = 0
+    config["REFRESH_RATE_PARKED"] = -10
+    with patch('teslamate_mqtt2abrp.mqtt.Client'):
+        abrp = TeslaMateABRP(config)
+        assert abrp.refresh_rate_driving == DEFAULT_REFRESH_RATE_DRIVING
+        assert abrp.refresh_rate_charging == DEFAULT_REFRESH_RATE_CHARGING
+        assert abrp.refresh_rate_parked == DEFAULT_REFRESH_RATE_PARKED
+
+def _run_driving_loop(refresh_rate_driving, iterations):
+    """Run the real update_timely loop in 'driving' state for a fixed number of
+    iterations and return how many times update_abrp was called."""
+    config = {
+        "DEBUG": False, "MQTTUSERNAME": None, "MQTTPASSWORD": None,
+        "MQTTTLS": False, "SKIPLOCATION": False, "USERTOKEN": 'test-token',
+        "CARNUMBER": '1', "MQTTSERVER": 'test-server', "MQTTPORT": '1883',
+        "CARMODEL": None, "BASETOPIC": None,
+        "REFRESH_RATE_DRIVING": refresh_rate_driving,
+    }
+    with patch('teslamate_mqtt2abrp.mqtt.Client'):
+        abrp = TeslaMateABRP(config)
+    abrp.state = "driving"
+    abrp.prev_state = "driving"  # avoid the state-change counter reset
+
+    sleep_calls = {"n": 0}
+    def fake_sleep(_seconds):
+        sleep_calls["n"] += 1
+        if sleep_calls["n"] > iterations:
+            raise KeyboardInterrupt()
+
+    with patch('teslamate_mqtt2abrp.sleep', side_effect=fake_sleep):
+        with patch.object(abrp, 'update_abrp') as mock_update:
+            with patch.object(abrp, 'publish_to_mqtt'):
+                try:
+                    abrp.update_timely()
+                except KeyboardInterrupt:
+                    pass
+    return mock_update.call_count
+
+def test_update_timely_respects_driving_refresh_rate():
+    """Driving updates must honor the configured rate (regression for issue #86).
+
+    Counter values i = 0..6 are covered by 7 iterations. With the default rate of
+    1, every iteration updates (7 calls). With a rate of 3, only i in {0, 3, 6}
+    update (3 calls) - previously the driving branch updated every iteration
+    regardless of the configured rate.
+    """
+    assert _run_driving_loop(1, 7) == 7
+    assert _run_driving_loop(3, 7) == 3
+
+@patch('teslamate_mqtt2abrp.click.command')
+def test_main_passes_refresh_rates_to_config(mock_command):
+    """main() should forward the refresh-rate options into the config dict"""
+    def mock_decorator(f):
+        return f
+    mock_command.return_value = mock_decorator
+
+    import teslamate_mqtt2abrp
+    importlib.reload(teslamate_mqtt2abrp)
+    try:
+        with patch('teslamate_mqtt2abrp.TeslaMateABRP') as mock_abrp:
+            with patch('teslamate_mqtt2abrp.get_docker_secret', return_value=None):
+                with patch('sys.exit'):
+                    teslamate_mqtt2abrp.main(
+                        user_token='test_token',
+                        car_number='1',
+                        mqtt_server='test_server',
+                        mqtt_username=None,
+                        mqtt_password=None,
+                        mqtt_port=None,
+                        car_model=None,
+                        status_topic=None,
+                        debug=False,
+                        use_auth=False,
+                        use_tls=False,
+                        skip_location=False,
+                        verify_cert=True,
+                        refresh_driving=5,
+                        refresh_charging=10,
+                        refresh_parked=60,
+                    )
+                    args, _ = mock_abrp.call_args
+                    config = args[0]
+                    assert config['REFRESH_RATE_DRIVING'] == 5
+                    assert config['REFRESH_RATE_CHARGING'] == 10
+                    assert config['REFRESH_RATE_PARKED'] == 60
+    finally:
+        importlib.reload(teslamate_mqtt2abrp)
 
 if __name__ == "__main__":
     pytest.main()

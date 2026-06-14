@@ -21,10 +21,10 @@ APIKEY = "d49234a5-2553-454e-8321-3fe30b49aa64"
 DEFAULT_MQTT_PORT = 1883
 DEFAULT_CAR_NUMBER = 1
 
-# Refresh rates (in seconds)
-REFRESH_RATE_DRIVING = 1
-REFRESH_RATE_CHARGING = 6
-REFRESH_RATE_PARKED = 30
+# Refresh rates (in seconds) - used as fallback defaults when not configured
+DEFAULT_REFRESH_RATE_DRIVING = 1
+DEFAULT_REFRESH_RATE_CHARGING = 6
+DEFAULT_REFRESH_RATE_PARKED = 30
 
 # Tesla model ID mapping
 MODEL_MAPPINGS = {
@@ -42,6 +42,23 @@ MODEL_MAPPINGS = {
     }
 }
 
+def validate_refresh_rate(value: Any, default: int, name: str) -> int:
+    """Validate a refresh rate, falling back to the default for missing/invalid values.
+
+    Refresh rates must be whole positive seconds (the update loop uses them as a
+    modulo divisor, so 0 or negative values are rejected).
+    """
+    if value is None:
+        return default
+    try:
+        rate = int(value)
+        if rate < 1:
+            raise ValueError
+        return rate
+    except (ValueError, TypeError):
+        logging.warning(f"Invalid {name} refresh rate provided: {value}. Using default: {default}s.")
+        return default
+
 ## [ la CLASSe américaine ]
 class TeslaMateABRP:
     def __init__(self, config):
@@ -57,6 +74,17 @@ class TeslaMateABRP:
         self.prev_state = ""
         self.charger_phases = 1
         self.has_usable_battery_level = False  # Flag to track if we've received usable_battery_level
+
+        # Refresh rates (in seconds), validated with fallback to defaults
+        self.refresh_rate_driving = validate_refresh_rate(
+            self.config.get("REFRESH_RATE_DRIVING"), DEFAULT_REFRESH_RATE_DRIVING, "driving"
+        )
+        self.refresh_rate_charging = validate_refresh_rate(
+            self.config.get("REFRESH_RATE_CHARGING"), DEFAULT_REFRESH_RATE_CHARGING, "charging"
+        )
+        self.refresh_rate_parked = validate_refresh_rate(
+            self.config.get("REFRESH_RATE_PARKED"), DEFAULT_REFRESH_RATE_PARKED, "parked"
+        )
         
         # Default data structure for ABRP
         self.data = {
@@ -455,9 +483,10 @@ class TeslaMateABRP:
             i += 1
             sleep(1)  # Base refresh rate
 
-            # Reset counter when state changes
+            # Reset counter when state changes so the first update fires promptly
+            # (0 % rate == 0 for any rate, regardless of the configured values)
             if self.state != self.prev_state:
-                i = max(REFRESH_RATE_PARKED, REFRESH_RATE_CHARGING, REFRESH_RATE_DRIVING)
+                i = 0
                 logging.debug(f"Current car state changed to: {self.state}.")
 
             # Update UTC timestamp
@@ -466,26 +495,27 @@ class TeslaMateABRP:
             # Handle different car states
             if self.state in ["parked", "online", "suspended", "asleep", "offline"]:
                 self.handle_parked_state(i)
-                if i % REFRESH_RATE_PARKED == 0 or i > REFRESH_RATE_PARKED:
+                if i % self.refresh_rate_parked == 0 or i > self.refresh_rate_parked:
                     if self.prev_state != self.state:
-                        logging.info(f"Car is sleeping, updating every {REFRESH_RATE_PARKED}s.")
+                        logging.info(f"Car is sleeping, updating every {self.refresh_rate_parked}s.")
                     self.update_abrp()
                     if self.base_topic:
                         self.publish_to_mqtt(self.data)
                     i = 0
             elif self.state == "charging":
-                if i % REFRESH_RATE_CHARGING == 0:
+                if i % self.refresh_rate_charging == 0:
                     if self.prev_state != self.state:
-                        logging.info(f"Car is charging, updating every {REFRESH_RATE_CHARGING}s.")
+                        logging.info(f"Car is charging, updating every {self.refresh_rate_charging}s.")
                     self.update_abrp()
                     if self.base_topic:
                         self.publish_to_mqtt(self.data)
             elif self.state == "driving":
-                if self.prev_state != self.state:
-                    logging.info(f"Car is driving, updating every {REFRESH_RATE_DRIVING}s.")
-                self.update_abrp()
-                if self.base_topic:
-                    self.publish_to_mqtt(self.data)
+                if i % self.refresh_rate_driving == 0:
+                    if self.prev_state != self.state:
+                        logging.info(f"Car is driving, updating every {self.refresh_rate_driving}s.")
+                    self.update_abrp()
+                    if self.base_topic:
+                        self.publish_to_mqtt(self.data)
             elif self.state:  # Any other non-empty state
                 logging.error(f"Car is in unknown state ({self.state}), not sending any update to ABRP.")
                 
@@ -557,9 +587,16 @@ def get_docker_secret(secret_name: str) -> Optional[str]:
              help='Verify TLS certificates (default: True)')
 @click.option('-x', '--skip-location', 'skip_location', is_flag=True, envvar='SKIP_LOCATION',
              help="Don't send LAT and LON to ABRP")
+@click.option('--refresh-driving', 'refresh_driving', type=int, envvar='REFRESH_RATE_DRIVING',
+             help=f'Update interval in seconds while driving (default: {DEFAULT_REFRESH_RATE_DRIVING})')
+@click.option('--refresh-charging', 'refresh_charging', type=int, envvar='REFRESH_RATE_CHARGING',
+             help=f'Update interval in seconds while charging (default: {DEFAULT_REFRESH_RATE_CHARGING})')
+@click.option('--refresh-parked', 'refresh_parked', type=int, envvar='REFRESH_RATE_PARKED',
+             help=f'Update interval in seconds while parked/asleep (default: {DEFAULT_REFRESH_RATE_PARKED})')
 
 def main(user_token, car_number, mqtt_server, mqtt_username, mqtt_password, mqtt_port,
-         car_model, status_topic, debug, use_auth, use_tls, verify_cert, skip_location):
+         car_model, status_topic, debug, use_auth, use_tls, verify_cert, skip_location,
+         refresh_driving, refresh_charging, refresh_parked):
     """teslamate-abrp
 
     A slightly convoluted way of getting your vehicle data from TeslaMate to A Better Route Planner.
@@ -633,6 +670,11 @@ def main(user_token, car_number, mqtt_server, mqtt_username, mqtt_password, mqtt
     config["BASETOPIC"] = status_topic
     config["SKIPLOCATION"] = skip_location
     config["DEBUG"] = debug
+
+    # Refresh rates (validated with fallback to defaults inside TeslaMateABRP)
+    config["REFRESH_RATE_DRIVING"] = refresh_driving
+    config["REFRESH_RATE_CHARGING"] = refresh_charging
+    config["REFRESH_RATE_PARKED"] = refresh_parked
 
     # Enhanced credential logging for troubleshooting
     if config["MQTTUSERNAME"]:
