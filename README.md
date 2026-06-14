@@ -62,6 +62,9 @@ ABRP:
     # - STATUS_TOPIC=teslamate-abrp
     # - SKIP_LOCATION=True
     # - TM2ABRP_DEBUG=True
+    # - REFRESH_RATE_DRIVING=1
+    # - REFRESH_RATE_CHARGING=6
+    # - REFRESH_RATE_PARKED=30
 ```
 
 Deploy the service:
@@ -139,6 +142,9 @@ secrets:
 | STATUS_TOPIC | Topic to publish status messages | - | No |
 | SKIP_LOCATION | Don't send location data to ABRP | False | No |
 | TM2ABRP_DEBUG | Enable debug logging | False | No |
+| REFRESH_RATE_DRIVING | Update interval (seconds) while driving | 1 | No |
+| REFRESH_RATE_CHARGING | Update interval (seconds) while charging | 6 | No |
+| REFRESH_RATE_PARKED | Update interval (seconds) while parked/asleep | 30 | No |
 
 ### Car Model Identification
 
@@ -174,12 +180,22 @@ Examples:
 
 ### Customizing Update Frequencies
 
-The application uses different update rates based on car state:
-- Driving: Updates every 1 second
-- Charging: Updates every 6 seconds
-- Parked/Asleep: Updates every 30 seconds
+The application uses different update rates (in seconds) based on car state, with these defaults:
+- Driving: every 1 second (`REFRESH_RATE_DRIVING`)
+- Charging: every 6 seconds (`REFRESH_RATE_CHARGING`)
+- Parked/Asleep: every 30 seconds (`REFRESH_RATE_PARKED`)
 
-These values can be customized by editing the constants at the top of the Python script.
+These can be customized via environment variables or the equivalent CLI options
+(`--refresh-driving`, `--refresh-charging`, `--refresh-parked`). Any value left
+unset falls back to the default above. Values must be whole positive seconds;
+invalid values are ignored (with a warning) and the default is used instead.
+
+For example, to make driving updates less aggressive:
+
+```yaml
+environment:
+  - REFRESH_RATE_DRIVING=5
+```
 
 ## Credits
 
