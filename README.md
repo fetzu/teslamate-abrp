@@ -139,6 +139,7 @@ secrets:
 | MQTT_USERNAME | MQTT username | - | No |
 | MQTT_PASSWORD | MQTT password | - | No |
 | MQTT_TLS | Use TLS for MQTT connection | False | No |
+| MQTT_VERIFY_CERT | Verify the broker's TLS certificate (only applies with MQTT_TLS). CLI: `--verify-cert`/`--no-verify-cert`. Invalid values fall back to enabled | True | No |
 | STATUS_TOPIC | Topic to publish status messages | - | No |
 | SKIP_LOCATION | Don't send location data to ABRP | False | No |
 | TM2ABRP_DEBUG | Enable debug logging | False | No |

@@ -161,26 +161,29 @@ def test_find_car_model(teslamate_abrp):
     # Test Model 3 detection
     teslamate_abrp.data["model"] = "3"
     teslamate_abrp.data["trim_badging"] = "74D"
-    
-    with patch('time.sleep'):  # Mock sleep to avoid waiting
+
+    # The code does `from time import sleep`, so the module-local binding
+    # teslamate_mqtt2abrp.sleep must be patched (patching time.sleep is a no-op
+    # here and would make each call really sleep 10s).
+    with patch('teslamate_mqtt2abrp.sleep'):
         teslamate_abrp.find_car_model()
-    
+
     assert teslamate_abrp.data["car_model"] == "3long_awd"
-    
+
     # Test Model Y detection
     teslamate_abrp.data["model"] = "Y"
     teslamate_abrp.data["trim_badging"] = "P74D"
-    
-    with patch('time.sleep'):
+
+    with patch('teslamate_mqtt2abrp.sleep'):
         teslamate_abrp.find_car_model()
-    
+
     assert teslamate_abrp.data["car_model"] == "tesla:my:19:bt37:perf"
-    
+
     # Test Model S detection
     teslamate_abrp.data["model"] = "S"
     teslamate_abrp.data["trim_badging"] = "100d"
-    
-    with patch('time.sleep'):
+
+    with patch('teslamate_mqtt2abrp.sleep'):
         teslamate_abrp.find_car_model()
     
     assert teslamate_abrp.data["car_model"] == "s100d"
@@ -263,64 +266,16 @@ def test_on_connect_with_base_topic(teslamate_abrp_with_topic):
     )
 
 def test_update_timely_mqtt_publishing():
-    # Create a test instance with base_topic
-    test_config = {
-        "DEBUG": False,
-        "MQTTUSERNAME": None,
-        "MQTTPASSWORD": None,
-        "MQTTTLS": False,
-        "SKIPLOCATION": False,
-        "USERTOKEN": 'test-token',
-        "CARNUMBER": '1',
-        "MQTTSERVER": 'test-server',
-        "MQTTPORT": '1883',
-        "CARMODEL": None,
-        "BASETOPIC": "tesla/abrp/status"
-    }
-    
-    # Create a separate test instance for this test
-    with patch('teslamate_mqtt2abrp.mqtt.Client') as mock_client:
-        instance = mock_client.return_value
-        with patch('time.sleep'):  # Skip actual sleep
-            with patch('teslamate_mqtt2abrp.TeslaMateABRP.update_abrp'):
-                with patch('teslamate_mqtt2abrp.TeslaMateABRP.publish_to_mqtt') as mock_publish:
-                    # Create instance directly with mocked methods
-                    abrp = TeslaMateABRP(test_config)
-                    abrp.client = instance
-                    
-                    # Setup driving state
-                    abrp.state = "driving"
-                    abrp.prev_state = "online"
-                    
-                    # Modify update_timely to exit after one iteration
-                    original_update_timely = abrp.update_timely
-                    
-                    def mock_update_timely():
-                        # Simulate one iteration of the while loop
-                        i = 0
-                        # Update UTC timestamp
-                        abrp.data["utc"] = 1234567890  # Mock timestamp
-                        
-                        # Handle different car states - simulate driving state
-                        if abrp.state == "driving":
-                            abrp.update_abrp()
-                            if abrp.base_topic:
-                                abrp.publish_to_mqtt(abrp.data)
-                        
-                        # Raise exception to exit the function
-                        raise KeyboardInterrupt()
-                    
-                    # Replace method
-                    abrp.update_timely = mock_update_timely
-                    
-                    # Run with exception handling
-                    try:
-                        abrp.update_timely()
-                    except KeyboardInterrupt:
-                        pass
-                    
-                    # Verify publish_to_mqtt was called once with abrp.data
-                    mock_publish.assert_called_once_with(abrp.data)
+    """The REAL update_timely loop publishes self.data to MQTT when a base topic
+    is set (driving branch, one iteration)."""
+    abrp, mock_update, mock_publish = _run_state_loop(
+        "driving", iterations=1, base_topic="tesla/abrp/status",
+        REFRESH_RATE_DRIVING=1,
+    )
+    # One driving iteration at rate 1 -> one ABRP update and one MQTT publish of
+    # the real data dict.
+    assert mock_update.call_count == 1
+    mock_publish.assert_called_once_with(abrp.data)
 
 def test_init(mock_args):
     """Test the __init__ method properly initializes instance variables"""
@@ -524,74 +479,33 @@ def test_run(teslamate_abrp):
 
 def test_run_with_keyboard_interrupt(teslamate_abrp):
     """Test run method with keyboard interrupt"""
-    # Make update_timely raise KeyboardInterrupt
-    with patch.object(teslamate_abrp, 'update_timely', side_effect=KeyboardInterrupt):
-        with patch.object(teslamate_abrp.client, 'loop_stop') as mock_loop_stop:
-            with patch.object(teslamate_abrp.client, 'disconnect') as mock_disconnect:
-                with patch.object(teslamate_abrp.client, 'is_connected', return_value=True):
-                    # Should not raise an exception
-                    teslamate_abrp.run()
-                    
-                    # Should stop the loop and disconnect
-                    mock_loop_stop.assert_called_once()
-                    mock_disconnect.assert_called_once()
+    # Patch find_car_model so run() doesn't execute the real 10s startup sleep.
+    with patch.object(teslamate_abrp, 'find_car_model'):
+        # Make update_timely raise KeyboardInterrupt
+        with patch.object(teslamate_abrp, 'update_timely', side_effect=KeyboardInterrupt):
+            with patch.object(teslamate_abrp.client, 'loop_stop') as mock_loop_stop:
+                with patch.object(teslamate_abrp.client, 'disconnect') as mock_disconnect:
+                    with patch.object(teslamate_abrp.client, 'is_connected', return_value=True):
+                        # Should not raise an exception
+                        teslamate_abrp.run()
 
-def test_update_timely(teslamate_abrp):
-    """Test update_timely method"""
-    # Mock sleep to prevent infinite loop
-    with patch('time.sleep'):
-        # Mock other methods
-        with patch.object(teslamate_abrp, 'update_abrp') as mock_update:
-            with patch.object(teslamate_abrp, 'publish_to_mqtt') as mock_publish:
-                # Store original method
-                original = teslamate_abrp.update_timely
-                
-                # Create a new method that will break out of the infinite loop
-                def fake_update_timely():
-                    # Only run one iteration
-                    i = 0
-                    
-                    # Update UTC timestamp
-                    teslamate_abrp.data["utc"] = 12345678
-                    
-                    # Only test one branch based on current state
-                    if teslamate_abrp.state in ["parked", "online", "suspended", "asleep", "offline"]:
-                        teslamate_abrp.handle_parked_state(i)
-                        if i % 30 == 0 or i > 30:
-                            teslamate_abrp.update_abrp()
-                            if teslamate_abrp.base_topic:
-                                teslamate_abrp.publish_to_mqtt(teslamate_abrp.data)
-                    elif teslamate_abrp.state == "charging":
-                        if i % 6 == 0:
-                            teslamate_abrp.update_abrp()
-                            if teslamate_abrp.base_topic:
-                                teslamate_abrp.publish_to_mqtt(teslamate_abrp.data)
-                    elif teslamate_abrp.state == "driving":
-                        teslamate_abrp.update_abrp()
-                        if teslamate_abrp.base_topic:
-                            teslamate_abrp.publish_to_mqtt(teslamate_abrp.data)
-                    elif teslamate_abrp.state:  # Any other non-empty state
-                        pass
-                        
-                    # Don't actually loop
-                    raise KeyboardInterrupt
-                
-                # Replace update_timely with our test version
-                teslamate_abrp.update_timely = fake_update_timely
-                
-                try:
-                    # Test parked state
-                    teslamate_abrp.state = "parked"
-                    teslamate_abrp.prev_state = "driving"
-                    teslamate_abrp.update_timely()
-                except KeyboardInterrupt:
-                    pass
-                
-                # Should call update_abrp
-                mock_update.assert_called_once()
-                
-                # Restore original method
-                teslamate_abrp.update_timely = original
+                        # Should stop the loop and disconnect
+                        mock_loop_stop.assert_called_once()
+                        mock_disconnect.assert_called_once()
+
+def test_update_timely():
+    """The REAL update_timely loop sends ABRP updates on the parked cadence and
+    resets power/speed via handle_parked_state."""
+    abrp, mock_update, mock_publish = _run_state_loop(
+        "online", iterations=11, REFRESH_RATE_PARKED=5,
+    )
+    # Parked sends fire at counter i in {0, 5, 10} over 11 iterations.
+    assert mock_update.call_count == 3
+    # Real handle_parked_state ran, zeroing power/speed.
+    assert abrp.data["power"] == 0.0
+    assert abrp.data["speed"] == 0
+    # No base topic configured -> nothing published to MQTT.
+    mock_publish.assert_not_called()
 
 # USING OPTION 1: Mocking Click Command functionality
 @patch('teslamate_mqtt2abrp.click.command')
@@ -948,102 +862,29 @@ def test_process_message_comprehensive(teslamate_abrp):
     # Test unhandled topics
     teslamate_abrp.process_message("unknown_topic", "some_value")
 
-def test_update_timely_comprehensive(teslamate_abrp):
-    """Test update_timely with all possible states"""
-    with patch('time.sleep') as mock_sleep:
-        with patch('calendar.timegm', return_value=12345678):
-            with patch.object(teslamate_abrp, 'update_abrp') as mock_update:
-                with patch.object(teslamate_abrp, 'publish_to_mqtt') as mock_publish:
-                    # Create a special version of update_timely that exits after one iteration
-                    def fake_update_timely():
-                        # Only run one iteration
-                        i = 0
-                        
-                        # Update UTC timestamp
-                        teslamate_abrp.data["utc"] = 12345678
-                        
-                        # Only test one branch based on current state
-                        if teslamate_abrp.state in ["parked", "online", "suspended", "asleep", "offline"]:
-                            teslamate_abrp.handle_parked_state(i)
-                            if i % 30 == 0 or i > 30:
-                                teslamate_abrp.update_abrp()
-                                if teslamate_abrp.base_topic:
-                                    teslamate_abrp.publish_to_mqtt(teslamate_abrp.data)
-                        elif teslamate_abrp.state == "charging":
-                            if i % 6 == 0:
-                                teslamate_abrp.update_abrp()
-                                if teslamate_abrp.base_topic:
-                                    teslamate_abrp.publish_to_mqtt(teslamate_abrp.data)
-                        elif teslamate_abrp.state == "driving":
-                            teslamate_abrp.update_abrp()
-                            if teslamate_abrp.base_topic:
-                                teslamate_abrp.publish_to_mqtt(teslamate_abrp.data)
-                        elif teslamate_abrp.state:  # Any other non-empty state
-                            pass
-                            
-                        # Don't actually loop
-                        raise KeyboardInterrupt
-                    
-                    # Replace update_timely with our test version
-                    teslamate_abrp.update_timely = fake_update_timely
-                    
-                    # Test parked state
-                    teslamate_abrp.state = "parked"
-                    teslamate_abrp.prev_state = "driving"
-                    try:
-                        teslamate_abrp.update_timely()
-                    except KeyboardInterrupt:
-                        pass
-                    
-                    # Should call update_abrp
-                    mock_update.assert_called_once()
-                    mock_update.reset_mock()
-                    
-                    # Test charging state
-                    teslamate_abrp.state = "charging"
-                    teslamate_abrp.prev_state = "parked"
-                    try:
-                        teslamate_abrp.update_timely()
-                    except KeyboardInterrupt:
-                        pass
-                    
-                    # Should call update_abrp
-                    mock_update.assert_called_once()
-                    mock_update.reset_mock()
-                    
-                    # Test driving state
-                    teslamate_abrp.state = "driving"
-                    teslamate_abrp.prev_state = "parked"
-                    try:
-                        teslamate_abrp.update_timely()
-                    except KeyboardInterrupt:
-                        pass
-                    
-                    # Should call update_abrp
-                    mock_update.assert_called_once()
-                    mock_update.reset_mock()
-                    
-                    # Test unknown state
-                    teslamate_abrp.state = "unknown_state"
-                    teslamate_abrp.prev_state = "driving"
-                    try:
-                        teslamate_abrp.update_timely()
-                    except KeyboardInterrupt:
-                        pass
-                    
-                    # Should not call update_abrp
-                    mock_update.assert_not_called()
-                    
-                    # Test with state change
-                    teslamate_abrp.state = "charging"
-                    teslamate_abrp.prev_state = "driving"
-                    try:
-                        teslamate_abrp.update_timely()
-                    except KeyboardInterrupt:
-                        pass
-                    
-                    # Should call update_abrp
-                    mock_update.assert_called_once()
+def test_update_timely_comprehensive():
+    """Drive the REAL update_timely loop through each state branch."""
+    # Parked branch: sends at i in {0, 5, 10}.
+    _, mock_update, _ = _run_state_loop("online", iterations=11, REFRESH_RATE_PARKED=5)
+    assert mock_update.call_count == 3
+
+    # Charging branch: sends at i in {0, 6, 12}.
+    _, mock_update, _ = _run_state_loop("charging", iterations=13, REFRESH_RATE_CHARGING=6)
+    assert mock_update.call_count == 3
+
+    # Driving branch: sends every iteration at rate 1.
+    _, mock_update, _ = _run_state_loop("driving", iterations=7, REFRESH_RATE_DRIVING=1)
+    assert mock_update.call_count == 7
+
+    # Unknown/unhandled state (e.g. TeslaMate "updating"): never sends.
+    _, mock_update, _ = _run_state_loop("updating", iterations=5)
+    mock_update.assert_not_called()
+
+    # A state change resets the counter so the first update fires immediately.
+    _, mock_update, _ = _run_state_loop(
+        "charging", iterations=1, prev_state="driving", REFRESH_RATE_CHARGING=6,
+    )
+    assert mock_update.call_count == 1
 
 def test_setup_mqtt_client_comprehensive(mock_args):
     """Test all branches of setup_mqtt_client"""
@@ -1375,20 +1216,27 @@ def test_refresh_rates_invalid_config_falls_back(mock_args):
         assert abrp.refresh_rate_charging == DEFAULT_REFRESH_RATE_CHARGING
         assert abrp.refresh_rate_parked == DEFAULT_REFRESH_RATE_PARKED
 
-def _run_driving_loop(refresh_rate_driving, iterations):
-    """Run the real update_timely loop in 'driving' state for a fixed number of
-    iterations and return how many times update_abrp was called."""
+def _run_state_loop(state, iterations, base_topic=None, prev_state=None, **rate_overrides):
+    """Drive the REAL update_timely loop in a given state for a fixed number of
+    iterations.
+
+    Returns (abrp, mock_update_abrp, mock_publish_to_mqtt). update_abrp and
+    publish_to_mqtt are mocked; sleep is patched at the module-local binding the
+    code actually uses, and raises KeyboardInterrupt after `iterations` ticks.
+    """
     config = {
         "DEBUG": False, "MQTTUSERNAME": None, "MQTTPASSWORD": None,
         "MQTTTLS": False, "SKIPLOCATION": False, "USERTOKEN": 'test-token',
         "CARNUMBER": '1', "MQTTSERVER": 'test-server', "MQTTPORT": '1883',
-        "CARMODEL": None, "BASETOPIC": None,
-        "REFRESH_RATE_DRIVING": refresh_rate_driving,
+        "CARMODEL": None, "BASETOPIC": base_topic,
     }
+    config.update(rate_overrides)
     with patch('teslamate_mqtt2abrp.mqtt.Client'):
         abrp = TeslaMateABRP(config)
-    abrp.state = "driving"
-    abrp.prev_state = "driving"  # avoid the state-change counter reset
+    abrp.state = state
+    # Default prev_state == state avoids the state-change counter reset so the
+    # pure modulo cadence can be asserted; pass prev_state to exercise the reset.
+    abrp.prev_state = state if prev_state is None else prev_state
 
     sleep_calls = {"n": 0}
     def fake_sleep(_seconds):
@@ -1398,11 +1246,19 @@ def _run_driving_loop(refresh_rate_driving, iterations):
 
     with patch('teslamate_mqtt2abrp.sleep', side_effect=fake_sleep):
         with patch.object(abrp, 'update_abrp') as mock_update:
-            with patch.object(abrp, 'publish_to_mqtt'):
+            with patch.object(abrp, 'publish_to_mqtt') as mock_publish:
                 try:
                     abrp.update_timely()
                 except KeyboardInterrupt:
                     pass
+    return abrp, mock_update, mock_publish
+
+def _run_driving_loop(refresh_rate_driving, iterations):
+    """Backwards-compatible wrapper returning the update_abrp call count for the
+    driving state."""
+    _, mock_update, _ = _run_state_loop(
+        "driving", iterations, REFRESH_RATE_DRIVING=refresh_rate_driving,
+    )
     return mock_update.call_count
 
 def test_update_timely_respects_driving_refresh_rate():
@@ -1415,6 +1271,66 @@ def test_update_timely_respects_driving_refresh_rate():
     """
     assert _run_driving_loop(1, 7) == 7
     assert _run_driving_loop(3, 7) == 3
+
+def test_update_timely_respects_parked_refresh_rate():
+    """Parked updates must honor the configured rate against the REAL loop."""
+    # Rate 5 over 11 iterations: counter i in {0, 5, 10} -> 3 sends.
+    _, mock_update, _ = _run_state_loop("online", iterations=11, REFRESH_RATE_PARKED=5)
+    assert mock_update.call_count == 3
+    # Rate 2 over 11 iterations: i in {0, 2, 4, 6, 8, 10} -> 6 sends.
+    _, mock_update, _ = _run_state_loop("asleep", iterations=11, REFRESH_RATE_PARKED=2)
+    assert mock_update.call_count == 6
+
+def test_update_timely_respects_charging_refresh_rate():
+    """Charging updates must honor the configured rate against the REAL loop."""
+    # Rate 6 over 13 iterations: i in {0, 6, 12} -> 3 sends.
+    _, mock_update, _ = _run_state_loop("charging", iterations=13, REFRESH_RATE_CHARGING=6)
+    assert mock_update.call_count == 3
+    # Rate 3 over 13 iterations: i in {0, 3, 6, 9, 12} -> 5 sends.
+    _, mock_update, _ = _run_state_loop("charging", iterations=13, REFRESH_RATE_CHARGING=3)
+    assert mock_update.call_count == 5
+
+def test_update_timely_exits_on_fatal_error(teslamate_abrp):
+    """A fatal MQTT error flagged from the callback thread makes the main loop
+    raise SystemExit (so the process actually terminates)."""
+    teslamate_abrp.fatal_error = "MQTT Authentication failed."
+    with patch('teslamate_mqtt2abrp.sleep'):
+        with pytest.raises(SystemExit):
+            teslamate_abrp.update_timely()
+
+def test_on_connect_failure_sets_fatal_error_without_exit(teslamate_abrp):
+    """on_connect must NOT call sys.exit (wrong thread); it records fatal_error
+    and does not subscribe."""
+    client_mock = MagicMock()
+    # reason_code 5 == "not authorised"
+    teslamate_abrp.on_connect(client_mock, None, None, 5, None)
+    assert teslamate_abrp.fatal_error is not None
+    client_mock.subscribe.assert_not_called()
+
+def test_parse_bool_env_fail_secure(monkeypatch):
+    """parse_bool_env returns the default for unset/invalid values and parses
+    common truthy/falsey strings otherwise."""
+    from teslamate_mqtt2abrp import parse_bool_env
+    monkeypatch.delenv("MQTT_VERIFY_CERT", raising=False)
+    assert parse_bool_env("MQTT_VERIFY_CERT", True) is True
+    monkeypatch.setenv("MQTT_VERIFY_CERT", "false")
+    assert parse_bool_env("MQTT_VERIFY_CERT", True) is False
+    monkeypatch.setenv("MQTT_VERIFY_CERT", "0")
+    assert parse_bool_env("MQTT_VERIFY_CERT", True) is False
+    monkeypatch.setenv("MQTT_VERIFY_CERT", "on")
+    assert parse_bool_env("MQTT_VERIFY_CERT", False) is True
+    # Invalid value falls back to the (fail-secure) default rather than crashing.
+    monkeypatch.setenv("MQTT_VERIFY_CERT", "garbage")
+    assert parse_bool_env("MQTT_VERIFY_CERT", True) is True
+
+def test_redact_secrets_strips_token():
+    """redact_secrets removes the ABRP token from URL-bearing exception text."""
+    from teslamate_mqtt2abrp import redact_secrets
+    msg = ("HTTPSConnectionPool(host='api.iternio.com', port=443): Max retries "
+           "exceeded with url: /1/tlm/send?token=SUPERSECRET123 (Caused by ...)")
+    out = redact_secrets(msg)
+    assert "SUPERSECRET123" not in out
+    assert "token=REDACTED" in out
 
 @patch('teslamate_mqtt2abrp.click.command')
 def test_main_passes_refresh_rates_to_config(mock_command):

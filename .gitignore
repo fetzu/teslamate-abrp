@@ -30,6 +30,7 @@ coverage.xml
 venv/
 env/
 ENV/
+.review_venv/
 
 # IDE
 .idea/
