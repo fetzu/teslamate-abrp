@@ -1332,6 +1332,48 @@ def test_redact_secrets_strips_token():
     assert "SUPERSECRET123" not in out
     assert "token=REDACTED" in out
 
+def test_update_abrp_skips_when_mqtt_disconnected(teslamate_abrp):
+    """While the MQTT link is down, update_abrp must NOT POST stale telemetry."""
+    teslamate_abrp.client.is_connected.return_value = False
+    with patch('requests.post') as mock_post:
+        teslamate_abrp.update_abrp()
+        mock_post.assert_not_called()
+
+def test_update_abrp_sends_when_mqtt_connected(teslamate_abrp):
+    """Sanity check: update_abrp still POSTs when the MQTT link is up."""
+    teslamate_abrp.client.is_connected.return_value = True
+    with patch('requests.post') as mock_post:
+        mock_post.return_value.json.return_value = {"status": "ok"}
+        teslamate_abrp.update_abrp()
+        mock_post.assert_called_once()
+
+def test_on_disconnect_warns_on_unexpected(teslamate_abrp, caplog):
+    """Unexpected disconnects are logged at WARNING; clean ones are not."""
+    with caplog.at_level(logging.WARNING):
+        teslamate_abrp.on_disconnect(MagicMock(), None, None, 7, None)
+    assert "disconnected unexpectedly" in caplog.text
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        teslamate_abrp.on_disconnect(MagicMock(), None, None, 0, None)
+    assert "disconnected unexpectedly" not in caplog.text
+
+def test_update_abrp_success_log_excludes_pii(teslamate_abrp, caplog):
+    """The INFO success line must not contain GPS/odometer PII (it goes to DEBUG)."""
+    teslamate_abrp.client.is_connected.return_value = True
+    teslamate_abrp.data["lat"] = 47.123456
+    teslamate_abrp.data["lon"] = 8.654321
+    teslamate_abrp.data["odometer"] = 42424.2
+    with patch('requests.post') as mock_post:
+        mock_post.return_value.json.return_value = {"status": "ok"}
+        with caplog.at_level(logging.INFO):
+            teslamate_abrp.update_abrp()
+    info_text = "\n".join(
+        r.getMessage() for r in caplog.records if r.levelno == logging.INFO
+    )
+    assert "47.123456" not in info_text
+    assert "8.654321" not in info_text
+    assert "42424.2" not in info_text
+
 @patch('teslamate_mqtt2abrp.click.command')
 def test_main_passes_refresh_rates_to_config(mock_command):
     """main() should forward the refresh-rate options into the config dict"""

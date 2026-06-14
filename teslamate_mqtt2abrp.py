@@ -204,6 +204,7 @@ class TeslaMateABRP:
         # Set up callbacks
         self.client.on_connect = self.on_connect
         self.client.on_message = self.on_message
+        self.client.on_disconnect = self.on_disconnect
 
         # Connect to MQTT server with better error handling
         mqtt_port = self.config.get("MQTTPORT", DEFAULT_MQTT_PORT)
@@ -273,6 +274,18 @@ class TeslaMateABRP:
         if self.base_topic:
             client.publish(self.state_topic, payload="online", qos=2, retain=True)
             logging.debug(f"Published 'online' status to {self.state_topic}")
+
+    def on_disconnect(self, client, userdata, disconnect_flags, reason_code, properties):
+        # paho's background network loop auto-reconnects; until it does,
+        # update_abrp() skips sending so stale telemetry isn't reported as live.
+        # A clean shutdown (reason_code 0) is logged at a lower level.
+        if reason_code == 0:
+            logging.debug("MQTT client disconnected cleanly.")
+        else:
+            logging.warning(
+                f"MQTT client disconnected unexpectedly (reason code {reason_code}). "
+                f"Pausing ABRP updates until the connection is restored."
+            )
 
     def on_message(self, client, userdata, message):
         try:
@@ -489,6 +502,12 @@ class TeslaMateABRP:
 
     def update_abrp(self):
         """Send data to ABRP API."""
+        # Don't POST while the MQTT link is down: self.state/self.data are frozen
+        # at their last-known values and would be reported to ABRP as if live.
+        # paho's background loop auto-reconnects (see on_disconnect).
+        if not self.client.is_connected():
+            logging.debug("MQTT not connected; skipping ABRP update to avoid sending stale data.")
+            return
         try:
             headers = {"Authorization": f"APIKEY {APIKEY}"}
             # Snapshot under the lock so the payload can't change mid-serialize.
@@ -511,7 +530,13 @@ class TeslaMateABRP:
                     if self.base_topic:
                         self.publish_to_mqtt({f"{self.prefix}_post_last_error": self.nice_now()})
                 else:
-                    logging.info(f"Data object successfully sent: {self.data}")
+                    # Keep an INFO heartbeat without PII; the full payload
+                    # (lat/lon/odometer) is only emitted at DEBUG.
+                    logging.info(
+                        f"Data sent to ABRP (soc={self.data.get('soc')}%, "
+                        f"state={self.state or 'unknown'})."
+                    )
+                    logging.debug(f"Full data object sent: {self.data}")
                     if self.base_topic:
                         self.publish_to_mqtt({f"{self.prefix}_post_last_success": self.nice_now()})
             except (json.JSONDecodeError, KeyError) as e:
