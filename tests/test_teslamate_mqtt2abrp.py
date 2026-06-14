@@ -266,11 +266,11 @@ def test_on_connect_with_base_topic(teslamate_abrp_with_topic):
 def test_update_timely_mqtt_publishing():
     """The REAL update_timely loop publishes self.data to MQTT when a base topic
     is set (driving branch, one iteration)."""
-    abrp, mock_update, mock_publish = _run_state_loop(
-        "driving", iterations=1, base_topic="tesla/abrp/status",
-        REFRESH_RATE_DRIVING=1,
+    abrp, mock_update, mock_publish, _ = _run_state_loop(
+        "driving", duration=0.9, base_topic="tesla/abrp/status",
+        REFRESH_RATE_DRIVING=1.0,
     )
-    # One driving iteration at rate 1 -> one ABRP update and one MQTT publish of
+    # One send within the first tick -> one ABRP update and one MQTT publish of
     # the real data dict.
     assert mock_update.call_count == 1
     mock_publish.assert_called_once_with(abrp.data)
@@ -439,7 +439,7 @@ def test_handle_parked_state(teslamate_abrp):
     teslamate_abrp.data["kwh_charged"] = 30.5
     
     # Call method
-    teslamate_abrp.handle_parked_state(0)
+    teslamate_abrp.handle_parked_state()
     
     # Verify data was updated
     assert teslamate_abrp.data["power"] == 0.0
@@ -492,12 +492,13 @@ def test_run_with_keyboard_interrupt(teslamate_abrp):
 def test_update_timely():
     """The REAL update_timely loop sends ABRP updates on the parked cadence and
     resets power/speed via handle_parked_state."""
-    abrp, mock_update, mock_publish = _run_state_loop(
-        "online", iterations=11, REFRESH_RATE_PARKED=5,
+    abrp, mock_update, mock_publish, times = _run_state_loop(
+        "online", duration=12.0, REFRESH_RATE_PARKED=5,
     )
-    # Parked sends fire at counter i in {0, 5, 10} over 11 iterations.
+    # Parked sends at 0.5, 5.5, 10.5 over 12s.
     assert mock_update.call_count == 3
-    # Real handle_parked_state ran, zeroing power/speed.
+    assert all(iv == 5.0 for iv in _intervals(times))
+    # handle_parked_state ran every tick, keeping power/speed zeroed.
     assert abrp.data["power"] == 0.0
     assert abrp.data["speed"] == 0
     # No base topic configured -> nothing published to MQTT.
@@ -671,27 +672,28 @@ def test_process_message_comprehensive(teslamate_abrp):
 
 def test_update_timely_comprehensive():
     """Drive the REAL update_timely loop through each state branch."""
-    # Parked branch: sends at i in {0, 5, 10}.
-    _, mock_update, _ = _run_state_loop("online", iterations=11, REFRESH_RATE_PARKED=5)
-    assert mock_update.call_count == 3
+    # Parked branch.
+    _, _, _, times = _run_state_loop("online", duration=12.0, REFRESH_RATE_PARKED=5)
+    assert len(times) >= 2 and all(iv == 5.0 for iv in _intervals(times))
 
-    # Charging branch: sends at i in {0, 6, 12}.
-    _, mock_update, _ = _run_state_loop("charging", iterations=13, REFRESH_RATE_CHARGING=6)
-    assert mock_update.call_count == 3
+    # Charging branch.
+    _, _, _, times = _run_state_loop("charging", duration=14.0, REFRESH_RATE_CHARGING=6)
+    assert len(times) >= 2 and all(iv == 6.0 for iv in _intervals(times))
 
-    # Driving branch: sends every iteration at rate 1.
-    _, mock_update, _ = _run_state_loop("driving", iterations=7, REFRESH_RATE_DRIVING=1)
-    assert mock_update.call_count == 7
+    # Driving branch (fractional rate).
+    _, _, _, times = _run_state_loop("driving", duration=8.0, REFRESH_RATE_DRIVING=2.5)
+    assert len(times) >= 2 and all(iv == 2.5 for iv in _intervals(times))
 
     # Unknown/unhandled state (e.g. TeslaMate "updating"): never sends.
-    _, mock_update, _ = _run_state_loop("updating", iterations=5)
+    _, mock_update, _, _ = _run_state_loop("updating", duration=5.0)
     mock_update.assert_not_called()
 
-    # A state change resets the counter so the first update fires immediately.
-    _, mock_update, _ = _run_state_loop(
-        "charging", iterations=1, prev_state="driving", REFRESH_RATE_CHARGING=6,
+    # A state change fires the first update immediately.
+    _, mock_update, _, times = _run_state_loop(
+        "charging", duration=0.9, prev_state="driving", REFRESH_RATE_CHARGING=6,
     )
     assert mock_update.call_count == 1
+    assert times == [0.5]
 
 def test_setup_mqtt_client_comprehensive(mock_args):
     """Test all branches of setup_mqtt_client"""
@@ -915,7 +917,7 @@ def test_handle_parked_state_comprehensive(teslamate_abrp):
     teslamate_abrp.data["kwh_charged"] = 30.5
     
     # Call method
-    teslamate_abrp.handle_parked_state(0)
+    teslamate_abrp.handle_parked_state()
     
     # Verify data was reset
     assert teslamate_abrp.data["power"] == 0.0
@@ -928,7 +930,7 @@ def test_handle_parked_state_comprehensive(teslamate_abrp):
     teslamate_abrp.data["kwh_charged"] = 15.2
     
     # Call method
-    teslamate_abrp.handle_parked_state(0)
+    teslamate_abrp.handle_parked_state()
     
     # Verify kwh_charged was removed
     assert "kwh_charged" not in teslamate_abrp.data
@@ -939,7 +941,7 @@ def test_handle_parked_state_comprehensive(teslamate_abrp):
     # kwh_charged already removed
     
     # Call method again
-    teslamate_abrp.handle_parked_state(0)
+    teslamate_abrp.handle_parked_state()
     
     # Verify values are still correct
     assert teslamate_abrp.data["power"] == 0.0
@@ -976,18 +978,25 @@ def test_battery_level_fallback(teslamate_abrp):
 
 # [ Refresh rate configuration tests (issue #86) ]
 def test_validate_refresh_rate():
-    """validate_refresh_rate should accept valid rates and fall back to defaults otherwise"""
+    """validate_refresh_rate accepts valid (incl. fractional) rates and falls
+    back to the default otherwise, enforcing the MIN_REFRESH_RATE floor."""
+    from teslamate_mqtt2abrp import MIN_REFRESH_RATE
     # None means "not configured" -> use the default
     assert validate_refresh_rate(None, 30, "parked") == 30
-    # Valid integers and integer-like strings are accepted
+    # Valid numbers and numeric strings are accepted (no truncation)
     assert validate_refresh_rate(5, 1, "driving") == 5
     assert validate_refresh_rate("12", 6, "charging") == 12
-    # Non-positive values are rejected (would break the modulo update loop)
+    assert validate_refresh_rate(2.5, 1, "driving") == 2.5
+    assert validate_refresh_rate("2.5", 1, "driving") == 2.5
+    # At/above the minimum is accepted; below it (incl. 0/negative) -> default
+    assert validate_refresh_rate(MIN_REFRESH_RATE, 30, "parked") == MIN_REFRESH_RATE
+    assert validate_refresh_rate(0.5, 30, "parked") == 30
     assert validate_refresh_rate(0, 30, "parked") == 30
     assert validate_refresh_rate(-5, 30, "parked") == 30
-    # Non-numeric values fall back to the default
+    # Non-numeric / non-finite values fall back to the default
     assert validate_refresh_rate("abc", 6, "charging") == 6
-    assert validate_refresh_rate(1.5, 6, "charging") == 1  # int() truncates valid floats
+    assert validate_refresh_rate(float("nan"), 6, "charging") == 6
+    assert validate_refresh_rate(float("inf"), 6, "charging") == 6
 
 def test_refresh_rates_default(mock_args):
     """When no refresh rates are configured, the documented defaults are used"""
@@ -1021,13 +1030,16 @@ def test_refresh_rates_invalid_config_falls_back(mock_args):
         assert abrp.refresh_rate_charging == DEFAULT_REFRESH_RATE_CHARGING
         assert abrp.refresh_rate_parked == DEFAULT_REFRESH_RATE_PARKED
 
-def _run_state_loop(state, iterations, base_topic=None, prev_state=None, **rate_overrides):
-    """Drive the REAL update_timely loop in a given state for a fixed number of
-    iterations.
+def _run_state_loop(state, duration, base_topic=None, prev_state=None, **rate_overrides):
+    """Drive the REAL update_timely loop in a given state for `duration` seconds
+    of simulated wall-clock time.
 
-    Returns (abrp, mock_update_abrp, mock_publish_to_mqtt). update_abrp and
-    publish_to_mqtt are mocked; sleep is patched at the module-local binding the
-    code actually uses, and raises KeyboardInterrupt after `iterations` ticks.
+    Both sleep() and monotonic() are patched onto a shared fake clock that each
+    sleep advances by the real REFRESH_TICK, so the actual wall-clock scheduler
+    runs deterministically and instantly. update_abrp/publish_to_mqtt are mocked.
+
+    Returns (abrp, mock_update_abrp, mock_publish_to_mqtt, send_times), where
+    send_times holds the fake-clock time of each ABRP update.
     """
     config = {
         "DEBUG": False, "MQTTUSERNAME": None, "MQTTPASSWORD": None,
@@ -1039,61 +1051,67 @@ def _run_state_loop(state, iterations, base_topic=None, prev_state=None, **rate_
     with patch('teslamate_mqtt2abrp.mqtt.Client'):
         abrp = TeslaMateABRP(config)
     abrp.state = state
-    # Default prev_state == state avoids the state-change counter reset so the
-    # pure modulo cadence can be asserted; pass prev_state to exercise the reset.
+    # prev_state == state by default avoids the state-change "send now" reset so
+    # the steady-state cadence can be asserted; pass prev_state to exercise it.
     abrp.prev_state = state if prev_state is None else prev_state
 
-    sleep_calls = {"n": 0}
-    def fake_sleep(_seconds):
-        sleep_calls["n"] += 1
-        if sleep_calls["n"] > iterations:
+    clock = {"t": 0.0}
+    def fake_sleep(dt):
+        clock["t"] = round(clock["t"] + dt, 6)
+        if clock["t"] > duration:
             raise KeyboardInterrupt()
+    def fake_monotonic():
+        return clock["t"]
 
+    send_times = []
     with patch('teslamate_mqtt2abrp.sleep', side_effect=fake_sleep):
-        with patch.object(abrp, 'update_abrp') as mock_update:
-            with patch.object(abrp, 'publish_to_mqtt') as mock_publish:
-                try:
-                    abrp.update_timely()
-                except KeyboardInterrupt:
-                    pass
-    return abrp, mock_update, mock_publish
+        with patch('teslamate_mqtt2abrp.monotonic', side_effect=fake_monotonic):
+            with patch.object(abrp, 'update_abrp',
+                              side_effect=lambda: send_times.append(clock["t"])) as mock_update:
+                with patch.object(abrp, 'publish_to_mqtt') as mock_publish:
+                    try:
+                        abrp.update_timely()
+                    except KeyboardInterrupt:
+                        pass
+    return abrp, mock_update, mock_publish, send_times
 
-def _run_driving_loop(refresh_rate_driving, iterations):
-    """Backwards-compatible wrapper returning the update_abrp call count for the
-    driving state."""
-    _, mock_update, _ = _run_state_loop(
-        "driving", iterations, REFRESH_RATE_DRIVING=refresh_rate_driving,
-    )
-    return mock_update.call_count
+def _intervals(times):
+    """Gaps between consecutive send times, rounded to avoid float noise."""
+    return [round(b - a, 6) for a, b in zip(times, times[1:])]
 
 def test_update_timely_respects_driving_refresh_rate():
-    """Driving updates must honor the configured rate (regression for issue #86).
-
-    Counter values i = 0..6 are covered by 7 iterations. With the default rate of
-    1, every iteration updates (7 calls). With a rate of 3, only i in {0, 3, 6}
-    update (3 calls) - previously the driving branch updated every iteration
-    regardless of the configured rate.
-    """
-    assert _run_driving_loop(1, 7) == 7
-    assert _run_driving_loop(3, 7) == 3
+    """Driving sends are spaced exactly by the configured rate - including
+    fractional rates (regression for issue #86 and the fractional-rate support)."""
+    for rate in (1.0, 2.5, 3.0):
+        _, _, _, times = _run_state_loop("driving", duration=12.0, REFRESH_RATE_DRIVING=rate)
+        assert len(times) >= 3, (rate, times)
+        assert all(iv == rate for iv in _intervals(times)), (rate, times)
 
 def test_update_timely_respects_parked_refresh_rate():
-    """Parked updates must honor the configured rate against the REAL loop."""
-    # Rate 5 over 11 iterations: counter i in {0, 5, 10} -> 3 sends.
-    _, mock_update, _ = _run_state_loop("online", iterations=11, REFRESH_RATE_PARKED=5)
-    assert mock_update.call_count == 3
-    # Rate 2 over 11 iterations: i in {0, 2, 4, 6, 8, 10} -> 6 sends.
-    _, mock_update, _ = _run_state_loop("asleep", iterations=11, REFRESH_RATE_PARKED=2)
-    assert mock_update.call_count == 6
+    """Parked updates are spaced by the configured parked rate."""
+    _, _, _, times = _run_state_loop("online", duration=20.0, REFRESH_RATE_PARKED=5)
+    assert len(times) >= 3
+    assert all(iv == 5.0 for iv in _intervals(times))
 
 def test_update_timely_respects_charging_refresh_rate():
-    """Charging updates must honor the configured rate against the REAL loop."""
-    # Rate 6 over 13 iterations: i in {0, 6, 12} -> 3 sends.
-    _, mock_update, _ = _run_state_loop("charging", iterations=13, REFRESH_RATE_CHARGING=6)
-    assert mock_update.call_count == 3
-    # Rate 3 over 13 iterations: i in {0, 3, 6, 9, 12} -> 5 sends.
-    _, mock_update, _ = _run_state_loop("charging", iterations=13, REFRESH_RATE_CHARGING=3)
-    assert mock_update.call_count == 5
+    """Charging updates are spaced by the configured charging rate."""
+    _, _, _, times = _run_state_loop("charging", duration=20.0, REFRESH_RATE_CHARGING=6)
+    assert len(times) >= 2
+    assert all(iv == 6.0 for iv in _intervals(times))
+
+def test_update_timely_fractional_rate_no_drift():
+    """Stability guarantee: a fractional rate stays exactly spaced over a long
+    run (intervals never drift)."""
+    _, _, _, times = _run_state_loop("driving", duration=250.0, REFRESH_RATE_DRIVING=2.5)
+    assert len(times) == 100  # 0.5, 3.0, ... 248.0
+    assert all(iv == 2.5 for iv in _intervals(times))
+
+def test_update_timely_min_rate_guard():
+    """A sub-minimum configured rate falls back to the default, so the loop can
+    never be driven below MIN_REFRESH_RATE."""
+    from teslamate_mqtt2abrp import DEFAULT_REFRESH_RATE_DRIVING
+    _, _, _, times = _run_state_loop("driving", duration=12.0, REFRESH_RATE_DRIVING=0.1)
+    assert all(iv == DEFAULT_REFRESH_RATE_DRIVING for iv in _intervals(times))
 
 def test_update_timely_exits_on_fatal_error(teslamate_abrp):
     """A fatal MQTT error flagged from the callback thread makes the main loop

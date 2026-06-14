@@ -16,7 +16,7 @@ import requests
 import json
 import paho.mqtt.client as mqtt
 import click
-from time import sleep
+from time import sleep, monotonic
 from typing import Dict, Any, Optional
 
 ## [ CONFIGURATION ]
@@ -29,13 +29,27 @@ DEFAULT_MQTT_PORT = 1883
 DEFAULT_CAR_NUMBER = 1
 
 # Refresh rates (in seconds) - used as fallback defaults when not configured.
-# Driving default is 2s: ABRP recommends a data point roughly every 5s and says
-# faster updates don't materially improve its predictions, so 2s stays responsive
-# while cutting redundant POSTs vs the old 1s default. (Must be whole seconds:
-# the update loop uses a 1s tick with integer-modulo scheduling.)
-DEFAULT_REFRESH_RATE_DRIVING = 2
+# Driving default is 2.5s: ABRP recommends a data point roughly every 5s and says
+# faster updates don't materially improve its predictions, so 2.5s stays
+# responsive while cutting redundant POSTs vs the old 1s default. Fractional
+# values are supported (see the wall-clock scheduler in update_timely).
+DEFAULT_REFRESH_RATE_DRIVING = 2.5
 DEFAULT_REFRESH_RATE_CHARGING = 6
 DEFAULT_REFRESH_RATE_PARKED = 30
+
+# The update loop polls on this fixed tick (seconds) and decides what to send
+# from a wall-clock timer, so any fractional rate >= MIN_REFRESH_RATE works.
+# Smaller tick => finer rate granularity and faster state-change detection, at
+# the cost of more (negligible) idle wakeups.
+REFRESH_TICK = 0.5
+# Lower bound for any refresh rate (seconds). ABRP's practical floor is ~1s; this
+# also keeps a misconfigured value from hammering the loop and the ABRP API.
+MIN_REFRESH_RATE = 1.0
+
+# Car states treated as parked/idle for scheduling and housekeeping.
+PARKED_STATES = ["parked", "online", "suspended", "asleep", "offline"]
+# Human-readable labels for the "updating every Ns" log line.
+STATE_LABELS = {"charging": "charging", "driving": "driving"}
 
 # Tesla model ID mapping
 MODEL_MAPPINGS = {
@@ -53,21 +67,25 @@ MODEL_MAPPINGS = {
     }
 }
 
-def validate_refresh_rate(value: Any, default: int, name: str) -> int:
+def validate_refresh_rate(value: Any, default: float, name: str) -> float:
     """Validate a refresh rate, falling back to the default for missing/invalid values.
 
-    Refresh rates must be whole positive seconds (the update loop uses them as a
-    modulo divisor, so 0 or negative values are rejected).
+    Rates are seconds and may be fractional (the update loop schedules on a
+    wall-clock timer). A value must be finite and at least MIN_REFRESH_RATE;
+    anything smaller (including 0/negative) or non-numeric falls back to default.
     """
     if value is None:
         return default
     try:
-        rate = int(value)
-        if rate < 1:
+        rate = float(value)
+        if not math.isfinite(rate) or rate < MIN_REFRESH_RATE:
             raise ValueError
         return rate
     except (ValueError, TypeError):
-        logging.warning(f"Invalid {name} refresh rate provided: {value}. Using default: {default}s.")
+        logging.warning(
+            f"Invalid {name} refresh rate provided: {value}. "
+            f"Must be a number >= {MIN_REFRESH_RATE}s. Using default: {default}s."
+        )
         return default
 
 
@@ -602,56 +620,68 @@ class TeslaMateABRP:
         """Return a formatted timestamp."""
         return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d %H:%M:%S")
 
+    def _refresh_rate_for_state(self, state: str) -> Optional[float]:
+        """Return the configured refresh rate (seconds) for a car state, or None
+        if the state is unknown and shouldn't trigger any ABRP update."""
+        if state in PARKED_STATES:
+            return self.refresh_rate_parked
+        if state == "charging":
+            return self.refresh_rate_charging
+        if state == "driving":
+            return self.refresh_rate_driving
+        return None
+
     def update_timely(self):
-        """Update ABRP based on car state and timers."""
-        i = -1
+        """Update ABRP based on car state and per-state refresh timers.
+
+        Scheduling is wall-clock based (monotonic): a send fires once at least
+        `rate` seconds have elapsed since the previous one. This supports
+        fractional-second rates, never accumulates drift (each interval is
+        measured from the last send time, not a counter), and polls on a small
+        fixed tick so state changes - set from the MQTT callback thread - are
+        detected within one tick.
+        """
+        last_send = None  # monotonic time of the last send; None -> send now
         while True:
             # A fatal MQTT failure is flagged from the callback thread; exit the
             # process from the main thread so it doesn't spin here forever and
             # the container runtime can apply its restart policy.
             if self.fatal_error:
                 raise SystemExit(self.fatal_error)
-            i += 1
-            sleep(1)  # Base refresh rate
+            sleep(REFRESH_TICK)
 
-            # Reset counter when state changes so the first update fires promptly
-            # (0 % rate == 0 for any rate, regardless of the configured values)
-            if self.state != self.prev_state:
-                i = 0
-                logging.debug(f"Current car state changed to: {self.state}.")
+            # Snapshot the state once so it can't change mid-iteration.
+            state = self.state
+            state_changed = state != self.prev_state
+            if state_changed:
+                last_send = None  # fire promptly on a state change
+                logging.debug(f"Current car state changed to: {state}.")
 
-            # (utc is stamped inside update_abrp at actual send time, not here.)
+            rate = self._refresh_rate_for_state(state)
+            if rate is None:
+                # Log once per entry into an unknown state (not every tick).
+                if state and state_changed:
+                    logging.error(f"Car is in unknown state ({state}), not sending any update to ABRP.")
+                self.prev_state = state
+                continue
 
-            # Handle different car states
-            if self.state in ["parked", "online", "suspended", "asleep", "offline"]:
-                self.handle_parked_state(i)
-                if i % self.refresh_rate_parked == 0:
-                    if self.prev_state != self.state:
-                        logging.info(f"Car is sleeping, updating every {self.refresh_rate_parked}s.")
-                    self.update_abrp()
-                    if self.base_topic:
-                        self.publish_to_mqtt(self.data)
-                    i = 0
-            elif self.state == "charging":
-                if i % self.refresh_rate_charging == 0:
-                    if self.prev_state != self.state:
-                        logging.info(f"Car is charging, updating every {self.refresh_rate_charging}s.")
-                    self.update_abrp()
-                    if self.base_topic:
-                        self.publish_to_mqtt(self.data)
-            elif self.state == "driving":
-                if i % self.refresh_rate_driving == 0:
-                    if self.prev_state != self.state:
-                        logging.info(f"Car is driving, updating every {self.refresh_rate_driving}s.")
-                    self.update_abrp()
-                    if self.base_topic:
-                        self.publish_to_mqtt(self.data)
-            elif self.state:  # Any other non-empty state
-                logging.error(f"Car is in unknown state ({self.state}), not sending any update to ABRP.")
-                
-            self.prev_state = self.state
+            # Parked/idle housekeeping runs every tick (cheap; zeroes power/speed).
+            if state in PARKED_STATES:
+                self.handle_parked_state()
 
-    def handle_parked_state(self, counter: int):
+            now = monotonic()
+            if last_send is None or (now - last_send) >= rate:
+                if state_changed:
+                    label = STATE_LABELS.get(state, "sleeping")
+                    logging.info(f"Car is {label}, updating every {rate}s.")
+                self.update_abrp()
+                if self.base_topic:
+                    self.publish_to_mqtt(self.data)
+                last_send = now
+
+            self.prev_state = state
+
+    def handle_parked_state(self):
         """Handle data updates when car is parked."""
         with self.data_lock:
             # Reset power and speed if they're not zero
@@ -719,12 +749,12 @@ def get_docker_secret(secret_name: str) -> Optional[str]:
                   'Env var MQTT_VERIFY_CERT also accepted; invalid values fall back to enabled.')
 @click.option('-x', '--skip-location', 'skip_location', is_flag=True, envvar='SKIP_LOCATION',
              help="Don't send LAT and LON to ABRP")
-@click.option('--refresh-driving', 'refresh_driving', type=int, envvar='REFRESH_RATE_DRIVING',
-             help=f'Update interval in seconds while driving (default: {DEFAULT_REFRESH_RATE_DRIVING})')
-@click.option('--refresh-charging', 'refresh_charging', type=int, envvar='REFRESH_RATE_CHARGING',
-             help=f'Update interval in seconds while charging (default: {DEFAULT_REFRESH_RATE_CHARGING})')
-@click.option('--refresh-parked', 'refresh_parked', type=int, envvar='REFRESH_RATE_PARKED',
-             help=f'Update interval in seconds while parked/asleep (default: {DEFAULT_REFRESH_RATE_PARKED})')
+@click.option('--refresh-driving', 'refresh_driving', type=float, envvar='REFRESH_RATE_DRIVING',
+             help=f'Update interval in seconds while driving (default: {DEFAULT_REFRESH_RATE_DRIVING}, min: {MIN_REFRESH_RATE})')
+@click.option('--refresh-charging', 'refresh_charging', type=float, envvar='REFRESH_RATE_CHARGING',
+             help=f'Update interval in seconds while charging (default: {DEFAULT_REFRESH_RATE_CHARGING}, min: {MIN_REFRESH_RATE})')
+@click.option('--refresh-parked', 'refresh_parked', type=float, envvar='REFRESH_RATE_PARKED',
+             help=f'Update interval in seconds while parked/asleep (default: {DEFAULT_REFRESH_RATE_PARKED}, min: {MIN_REFRESH_RATE})')
 
 def main(user_token, car_number, mqtt_server, mqtt_username, mqtt_password, mqtt_port,
          car_model, status_topic, debug, use_auth, use_tls, verify_cert, skip_location,
