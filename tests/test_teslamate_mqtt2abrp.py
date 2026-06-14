@@ -1,6 +1,7 @@
 import pytest
 import json
 import os
+import math
 import logging
 import sys
 import types
@@ -145,12 +146,14 @@ def test_handle_state_change(teslamate_abrp):
     assert teslamate_abrp.data["is_charging"] == True
     assert teslamate_abrp.data["is_dcfc"] == False
     
-    # Test supercharging state
+    # "supercharging" is not a real TeslaMate state (DCFC is detected via the
+    # charger_power/power heuristics), so handle_state_change leaves flags as-is.
+    teslamate_abrp.data["is_charging"] = True
+    teslamate_abrp.data["is_dcfc"] = True
     teslamate_abrp.handle_state_change("supercharging")
-    assert teslamate_abrp.data["is_parked"] == True
     assert teslamate_abrp.data["is_charging"] == True
     assert teslamate_abrp.data["is_dcfc"] == True
-    
+
     # Test parked state
     teslamate_abrp.handle_state_change("online")
     assert teslamate_abrp.data["is_parked"] == True
@@ -1373,6 +1376,62 @@ def test_update_abrp_success_log_excludes_pii(teslamate_abrp, caplog):
     assert "47.123456" not in info_text
     assert "8.654321" not in info_text
     assert "42424.2" not in info_text
+
+def test_non_finite_power_rejected(teslamate_abrp):
+    """A nan/inf 'power' payload must not be stored (it would poison every POST)."""
+    teslamate_abrp.data["power"] = 5.0
+    for bad in ("nan", "inf", "-inf", "1e400"):
+        teslamate_abrp.process_message("power", bad)
+        assert math.isfinite(teslamate_abrp.data["power"])
+        assert teslamate_abrp.data["power"] == 5.0  # unchanged
+
+def test_update_abrp_drops_non_finite_values(teslamate_abrp):
+    """Even if a non-finite value slips into self.data, the POST body is sanitized
+    so json(allow_nan=False) doesn't reject the whole payload."""
+    teslamate_abrp.client.is_connected.return_value = True
+    teslamate_abrp.data["power"] = float("nan")
+    with patch('requests.post') as mock_post:
+        mock_post.return_value.json.return_value = {"status": "ok"}
+        teslamate_abrp.update_abrp()
+        mock_post.assert_called_once()
+        body = mock_post.call_args.kwargs["json"]["tlm"]
+        assert "power" not in body  # non-finite value dropped
+        # And it serializes as valid JSON (allow_nan=False, the requests default).
+        json.dumps(body, allow_nan=False)
+
+def test_charger_power_zero_resets_charge_flags(teslamate_abrp):
+    """charger_power dropping to 0 clears the charge flags (defence against a
+    missed 'state' transition latching is_charging/is_dcfc)."""
+    teslamate_abrp.process_message("charger_power", "50")
+    assert teslamate_abrp.data["is_charging"] is True
+    teslamate_abrp.process_message("charger_power", "0")
+    assert teslamate_abrp.data["is_charging"] is False
+    assert teslamate_abrp.data["is_dcfc"] is False
+
+def test_charger_overflow_does_not_spam(teslamate_abrp):
+    """A huge charger_voltage/current must not raise OverflowError out of the
+    power calculation (it should be swallowed, message dropped)."""
+    teslamate_abrp.data["is_charging"] = True
+    teslamate_abrp.data["is_dcfc"] = False
+    teslamate_abrp.process_message("charger_actual_current", "9" * 400)
+    # Should not raise; power stays finite (or untouched).
+    teslamate_abrp.process_message("charger_voltage", "9" * 400)
+    assert math.isfinite(teslamate_abrp.data["power"])
+
+def test_publish_to_mqtt_skips_unchanged(teslamate_abrp_with_topic):
+    """Unchanged values are not republished (retain=True already holds them)."""
+    with patch.object(teslamate_abrp_with_topic.client, 'publish') as mock_publish:
+        teslamate_abrp_with_topic.publish_to_mqtt({"a": 1, "b": 2})
+        assert mock_publish.call_count == 2
+        mock_publish.reset_mock()
+        # Identical re-publish is suppressed.
+        teslamate_abrp_with_topic.publish_to_mqtt({"a": 1, "b": 2})
+        mock_publish.assert_not_called()
+        # A changed value publishes again (only the changed key).
+        teslamate_abrp_with_topic.publish_to_mqtt({"a": 1, "b": 3})
+        mock_publish.assert_called_once_with(
+            "tesla/abrp/status/b", payload=3, qos=1, retain=True
+        )
 
 @patch('teslamate_mqtt2abrp.click.command')
 def test_main_passes_refresh_rates_to_config(mock_command):

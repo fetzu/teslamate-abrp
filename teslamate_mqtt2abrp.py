@@ -9,6 +9,7 @@ import datetime
 import calendar
 import os
 import re
+import math
 import threading
 import logging
 import requests
@@ -109,6 +110,9 @@ class TeslaMateABRP:
         # Guards self.data: it is mutated by the paho callback thread (on_message)
         # and read/serialized by the main update loop.
         self.data_lock = threading.Lock()
+        # Last value published per MQTT key, so unchanged values aren't
+        # republished every cycle (retain=True already holds them on the broker).
+        self.last_published: Dict[str, Any] = {}
         # Set from the paho callback thread (on_connect) to request a shutdown
         # that must happen on the main thread.
         self.fatal_error: Optional[str] = None
@@ -336,8 +340,13 @@ class TeslaMateABRP:
                 pass
         elif topic == "power":
             try:
-                self.data["power"] = float(payload)
-                if self.data["is_charging"] and float(payload) < -11:
+                value = float(payload)
+                # Reject non-finite values (nan/inf): json(allow_nan=False) would
+                # otherwise reject the whole payload and break every later POST.
+                if not math.isfinite(value):
+                    raise ValueError("non-finite power")
+                self.data["power"] = value
+                if self.data["is_charging"] and value < -11:
                     self.data["is_dcfc"] = True
             except ValueError:
                 pass
@@ -347,6 +356,11 @@ class TeslaMateABRP:
                     self.data["is_charging"] = True
                     if int(payload) > 11:
                         self.data["is_dcfc"] = True
+                elif payload and int(payload) == 0:
+                    # Charger power dropped to 0: clear the charge flags so a
+                    # missed 'state' transition can't latch stale charging flags.
+                    self.data["is_charging"] = False
+                    self.data["is_dcfc"] = False
             except ValueError:
                 pass
         elif topic == "heading":
@@ -429,8 +443,12 @@ class TeslaMateABRP:
 
         # Calculate accurate power on AC charging
         if self.data["is_charging"] and not self.data["is_dcfc"] and "voltage" in self.data and "current" in self.data:
-            self.data["power"] = (float(self.data["current"] * self.data["voltage"] * self.charger_phases) 
-                             / 1000.0 * -1)
+            # Guard against OverflowError from absurdly large (malformed) values.
+            try:
+                self.data["power"] = (float(self.data["current"] * self.data["voltage"] * self.charger_phases)
+                                      / 1000.0 * -1)
+            except (OverflowError, ValueError):
+                pass
 
     def handle_state_change(self, state: str):
         """Update car state and relevant data fields."""
@@ -442,10 +460,6 @@ class TeslaMateABRP:
             self.data["is_parked"] = True
             self.data["is_charging"] = True
             self.data["is_dcfc"] = False
-        elif state == "supercharging":
-            self.data["is_parked"] = True
-            self.data["is_charging"] = True
-            self.data["is_dcfc"] = True
         elif state in ["online", "suspended", "asleep", "offline"]:
             self.data["is_parked"] = True
             self.data["is_charging"] = False
@@ -490,6 +504,11 @@ class TeslaMateABRP:
         with self.data_lock:
             items = list(data_object.items())
         for key, value in items:
+            # Skip republishing unchanged values: retain=True already keeps the
+            # last value on the broker, so this only drops redundant traffic
+            # (e.g. while parked only `utc` changes, not all ~21 fields).
+            if key in self.last_published and self.last_published[key] == value:
+                continue
             try:
                 self.client.publish(
                     f"{self.base_topic}/{key}",
@@ -497,6 +516,7 @@ class TeslaMateABRP:
                     qos=1,
                     retain=True
                 )
+                self.last_published[key] = value
             except Exception as e:
                 logging.error(f"Failed to publish to MQTT: {e}")
 
@@ -512,7 +532,15 @@ class TeslaMateABRP:
             headers = {"Authorization": f"APIKEY {APIKEY}"}
             # Snapshot under the lock so the payload can't change mid-serialize.
             with self.data_lock:
-                body = {"tlm": dict(self.data)}
+                snapshot = dict(self.data)
+            # Defense-in-depth: drop any non-finite numbers (nan/inf) so json
+            # (allow_nan=False) can't reject the whole payload and break every
+            # subsequent POST until the offending value happens to change.
+            snapshot = {
+                k: v for k, v in snapshot.items()
+                if not (isinstance(v, float) and not math.isfinite(v))
+            }
+            body = {"tlm": snapshot}
             response = requests.post(
                 f"https://api.iternio.com/1/tlm/send?token={self.config.get('USERTOKEN')}",
                 headers=headers,
@@ -586,7 +614,7 @@ class TeslaMateABRP:
             # Handle different car states
             if self.state in ["parked", "online", "suspended", "asleep", "offline"]:
                 self.handle_parked_state(i)
-                if i % self.refresh_rate_parked == 0 or i > self.refresh_rate_parked:
+                if i % self.refresh_rate_parked == 0:
                     if self.prev_state != self.state:
                         logging.info(f"Car is sleeping, updating every {self.refresh_rate_parked}s.")
                     self.update_abrp()
