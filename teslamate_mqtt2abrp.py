@@ -20,12 +20,20 @@ from time import sleep
 from typing import Dict, Any, Optional
 
 ## [ CONFIGURATION ]
+# Shared ABRP "Generic" application key. This is NOT a per-user secret - it
+# identifies the integration, and every user supplies their own USER_TOKEN.
+# It can be overridden at deploy time via the ABRP_API_KEY env var or a Docker
+# secret of the same name; the literal below is the default fallback.
 APIKEY = "d49234a5-2553-454e-8321-3fe30b49aa64"
 DEFAULT_MQTT_PORT = 1883
 DEFAULT_CAR_NUMBER = 1
 
-# Refresh rates (in seconds) - used as fallback defaults when not configured
-DEFAULT_REFRESH_RATE_DRIVING = 1
+# Refresh rates (in seconds) - used as fallback defaults when not configured.
+# Driving default is 2s: ABRP recommends a data point roughly every 5s and says
+# faster updates don't materially improve its predictions, so 2s stays responsive
+# while cutting redundant POSTs vs the old 1s default. (Must be whole seconds:
+# the update loop uses a 1s tick with integer-modulo scheduling.)
+DEFAULT_REFRESH_RATE_DRIVING = 2
 DEFAULT_REFRESH_RATE_CHARGING = 6
 DEFAULT_REFRESH_RATE_PARKED = 30
 
@@ -99,6 +107,9 @@ class TeslaMateABRP:
         self.configure_logging()
         self.base_topic = self.config.get("BASETOPIC")
         self.prefix = "_tm2abrp"
+        # ABRP application key: config override (env/Docker secret) or the
+        # shared default. Not a per-user secret (see APIKEY above).
+        self.api_key = self.config.get("APIKEY") or APIKEY
         # Only set state_topic if base_topic is provided
         self.state_topic = f"{self.base_topic}/{self.prefix}_status" if self.base_topic else None
         
@@ -529,9 +540,11 @@ class TeslaMateABRP:
             logging.debug("MQTT not connected; skipping ABRP update to avoid sending stale data.")
             return
         try:
-            headers = {"Authorization": f"APIKEY {APIKEY}"}
+            headers = {"Authorization": f"APIKEY {self.api_key}"}
             # Snapshot under the lock so the payload can't change mid-serialize.
+            # Stamp the send time here (P-3) rather than on every idle loop tick.
             with self.data_lock:
+                self.data["utc"] = calendar.timegm(datetime.datetime.now(datetime.UTC).timetuple())
                 snapshot = dict(self.data)
             # Defense-in-depth: drop any non-finite numbers (nan/inf) so json
             # (allow_nan=False) can't reject the whole payload and break every
@@ -607,9 +620,7 @@ class TeslaMateABRP:
                 i = 0
                 logging.debug(f"Current car state changed to: {self.state}.")
 
-            # Update UTC timestamp
-            with self.data_lock:
-                self.data["utc"] = calendar.timegm(datetime.datetime.now(datetime.UTC).timetuple())
+            # (utc is stamped inside update_abrp at actual send time, not here.)
 
             # Handle different car states
             if self.state in ["parked", "online", "suspended", "asleep", "offline"]:
@@ -800,6 +811,12 @@ def main(user_token, car_number, mqtt_server, mqtt_username, mqtt_password, mqtt
     config["REFRESH_RATE_DRIVING"] = refresh_driving
     config["REFRESH_RATE_CHARGING"] = refresh_charging
     config["REFRESH_RATE_PARKED"] = refresh_parked
+
+    # Optional ABRP application-key override (Docker secret or env var); falls
+    # back to the shared default inside TeslaMateABRP. Not a per-user secret.
+    config["APIKEY"] = get_docker_secret('ABRP_API_KEY') or os.environ.get('ABRP_API_KEY')
+    if config["APIKEY"]:
+        logging.debug("Using ABRP_API_KEY override (Docker secret or env var)")
 
     # Enhanced credential logging for troubleshooting
     if config["MQTTUSERNAME"]:

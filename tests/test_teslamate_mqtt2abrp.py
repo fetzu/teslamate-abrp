@@ -1,14 +1,12 @@
 import pytest
 import json
-import os
 import math
 import logging
 import sys
-import types
-import importlib
-from unittest.mock import patch, MagicMock, mock_open, call
+from unittest.mock import patch, MagicMock, mock_open
 from teslamate_mqtt2abrp import (
     TeslaMateABRP,
+    APIKEY,
     DEFAULT_MQTT_PORT,
     DEFAULT_REFRESH_RATE_DRIVING,
     DEFAULT_REFRESH_RATE_CHARGING,
@@ -16,6 +14,21 @@ from teslamate_mqtt2abrp import (
     validate_refresh_rate,
     main,
 )
+
+# Default kwargs for main()'s underlying function, overridden per test.
+_MAIN_DEFAULTS = dict(
+    user_token='test_token', car_number='1', mqtt_server='test_server',
+    mqtt_username=None, mqtt_password=None, mqtt_port=None, car_model=None,
+    status_topic=None, debug=False, use_auth=False, use_tls=False,
+    skip_location=False, verify_cert=True, refresh_driving=None,
+    refresh_charging=None, refresh_parked=None,
+)
+
+
+def _call_main(**overrides):
+    """Invoke the real main() body directly via its Click .callback, so tests
+    don't have to reload the module to unwrap the decorator."""
+    return main.callback(**{**_MAIN_DEFAULTS, **overrides})
 
 @pytest.fixture
 def mock_args():
@@ -74,24 +87,6 @@ def teslamate_abrp_with_topic(mock_args_with_base_topic):
         # Ensure client property exists
         abrp.client = instance
         return abrp
-
-@pytest.fixture
-def mock_click_command():
-    """Fixture to mock Click command decorator for direct function access"""
-    with patch('teslamate_mqtt2abrp.click.command') as mock_command:
-        # Make mock_command return a function that just calls its argument
-        def mock_decorator(f):
-            return f
-        mock_command.return_value = mock_decorator
-        
-        # Reload to get the unwrapped function
-        import teslamate_mqtt2abrp
-        importlib.reload(teslamate_mqtt2abrp)
-        
-        yield teslamate_mqtt2abrp.main
-        
-        # Clean up: reload original module after test
-        importlib.reload(teslamate_mqtt2abrp)
 
 def test_parse_config(mock_args):
     with patch('teslamate_mqtt2abrp.TeslaMateABRP.setup_mqtt_client'):
@@ -317,7 +312,7 @@ def test_configure_logging(mock_args):
     with patch('logging.basicConfig') as mock_logging:
         with patch('teslamate_mqtt2abrp.TeslaMateABRP.setup_mqtt_client'):
             # Test with DEBUG = False
-            abrp = TeslaMateABRP(mock_args)
+            TeslaMateABRP(mock_args)
             mock_logging.assert_called_once()
             args, kwargs = mock_logging.call_args
             assert kwargs['level'] == logging.INFO
@@ -326,7 +321,7 @@ def test_configure_logging(mock_args):
             mock_logging.reset_mock()
             debug_args = mock_args.copy()
             debug_args["DEBUG"] = True
-            abrp = TeslaMateABRP(debug_args)
+            TeslaMateABRP(debug_args)
             mock_logging.assert_called_once()
             args, kwargs = mock_logging.call_args
             assert kwargs['level'] == logging.DEBUG
@@ -334,11 +329,9 @@ def test_configure_logging(mock_args):
 def test_setup_mqtt_client(mock_args):
     """Test the MQTT client setup"""
     with patch('teslamate_mqtt2abrp.mqtt.Client', autospec=True) as mock_client_class:
-        mock_instance = mock_client_class.return_value
-        
         # Create a TeslaMateABRP instance
         abrp = TeslaMateABRP(mock_args)
-        
+
         # Check that client was created with expected parameters
         mock_client_class.assert_called_once()
         
@@ -364,8 +357,8 @@ def test_setup_mqtt_client_with_auth(mock_args):
         instance = mock_client.return_value
         
         # Create a TeslaMateABRP instance
-        abrp = TeslaMateABRP(auth_args)
-        
+        TeslaMateABRP(auth_args)
+
         # Check username and password were set
         instance.username_pw_set.assert_called_once_with("test_user", "test_password")
 
@@ -378,8 +371,8 @@ def test_setup_mqtt_client_with_tls(mock_args):
         instance = mock_client.return_value
         
         # Create a TeslaMateABRP instance
-        abrp = TeslaMateABRP(tls_args)
-        
+        TeslaMateABRP(tls_args)
+
         # Check TLS was set
         instance.tls_set.assert_called_once()
 
@@ -407,7 +400,7 @@ def test_setup_mqtt_client_connection_error(mock_args):
         
         # Should exit with error
         with pytest.raises(SystemExit):
-            abrp = TeslaMateABRP(mock_args)
+            TeslaMateABRP(mock_args)
 
 def test_on_message(teslamate_abrp):
     """Test on_message method handles messages correctly"""
@@ -510,248 +503,59 @@ def test_update_timely():
     # No base topic configured -> nothing published to MQTT.
     mock_publish.assert_not_called()
 
-# USING OPTION 1: Mocking Click Command functionality
-@patch('teslamate_mqtt2abrp.click.command')
-def test_main_with_click_mocked(mock_command):
-    """Test main function by mocking Click's command decorator"""
-    # Make mock_command return a function that just calls its argument
-    def mock_decorator(f):
-        return f
-    mock_command.return_value = mock_decorator
-    
-    # Reload the module to get the unwrapped function
-    import teslamate_mqtt2abrp
-    importlib.reload(teslamate_mqtt2abrp)
-    
-    # Now we can directly test the unwrapped main function
-    with patch('teslamate_mqtt2abrp.TeslaMateABRP') as mock_teslamate_abrp:
-        with patch('teslamate_mqtt2abrp.get_docker_secret', return_value=None) as mock_get_docker_secret:
+def test_main_builds_config():
+    """main() forwards the user token into the TeslaMateABRP config."""
+    with patch('teslamate_mqtt2abrp.TeslaMateABRP') as mock_abrp:
+        with patch('teslamate_mqtt2abrp.get_docker_secret', return_value=None):
             with patch('sys.exit'):
-                # Test with minimum required args
-                teslamate_mqtt2abrp.main(
-                    user_token='test_token',
-                    car_number='1',
-                    mqtt_server='test_server',
-                    mqtt_username=None,
-                    mqtt_password=None,
-                    mqtt_port=None,
-                    car_model=None,
-                    status_topic=None,
-                    debug=False,
-                    use_auth=False,
-                    use_tls=False,
-                    skip_location=False,
-                    verify_cert=True,
-                    refresh_driving=None,
-                    refresh_charging=None,
-                    refresh_parked=None
-                )
-                
-                # Check TeslaMateABRP was instantiated with correct config
-                mock_teslamate_abrp.assert_called_once()
-                args, kwargs = mock_teslamate_abrp.call_args
-                config = args[0]
-                assert config['USERTOKEN'] == 'test_token'
-    
-    # Reload the module back to normal after test
-    importlib.reload(teslamate_mqtt2abrp)
+                _call_main(user_token='test_token')
+    mock_abrp.assert_called_once()
+    config = mock_abrp.call_args[0][0]
+    assert config['USERTOKEN'] == 'test_token'
 
-def test_main_missing_required_args_direct():
-    """Test main function error handling with direct imports and checks"""
-    # Import the module directly
-    from teslamate_mqtt2abrp import get_docker_secret
-    
-    # Create a mock for sys.exit that raises an exception instead of exiting
+def test_main_missing_required_args():
+    """main() echoes an error and exits when a required arg is missing."""
     class MockExit(Exception):
-        def __init__(self, code=0):
-            self.code = code
-            super().__init__(f"sys.exit called with code {code}")
-    
-    # Create a mock for click.echo that captures messages
+        pass
+
     echo_messages = []
-    def mock_echo(message):
-        echo_messages.append(message)
-    
-    # Replace the actual functions
     with patch('sys.exit', side_effect=MockExit):
-        with patch('teslamate_mqtt2abrp.click.echo', side_effect=mock_echo):
+        with patch('teslamate_mqtt2abrp.click.echo', side_effect=echo_messages.append):
             with patch('teslamate_mqtt2abrp.get_docker_secret', return_value=None):
-                # Import main inside the patched context
-                from teslamate_mqtt2abrp import main
-                
-                # Test missing MQTT server
-                try:
-                    main(
-                        user_token='test_token',
-                        car_number='1',
-                        mqtt_server=None,  # Missing required argument
-                        mqtt_username=None,
-                        mqtt_password=None,
-                        mqtt_port=None,
-                        car_model=None,
-                        status_topic=None,
-                        debug=False,
-                        use_auth=False,
-                        use_tls=False,
-                        skip_location=False,
-                        verify_cert=True,
-                        refresh_driving=None,
-                        refresh_charging=None,
-                        refresh_parked=None
-                    )
-                    pytest.fail("Expected MockExit exception")
-                except MockExit as e:
-                    # The specific error code could be 0 or 1 depending on implementation
-                    # What's important is that sys.exit was called and the error message is correct
-                    assert "MQTT server" in echo_messages[-1], "Expected error about MQTT server"
-                
-                # Clear captured messages
+                with pytest.raises(MockExit):
+                    _call_main(mqtt_server=None)
+                assert "MQTT server" in echo_messages[-1]
+
                 echo_messages.clear()
-                
-                # Test missing user token
-                try:
-                    main(
-                        user_token=None,  # Missing required argument
-                        car_number='1',
-                        mqtt_server='test_server',
-                        mqtt_username=None,
-                        mqtt_password=None,
-                        mqtt_port=None,
-                        car_model=None,
-                        status_topic=None,
-                        debug=False,
-                        use_auth=False,
-                        use_tls=False,
-                        skip_location=False,
-                        verify_cert=True,
-                        refresh_driving=None,
-                        refresh_charging=None,
-                        refresh_parked=None
-                    )
-                    pytest.fail("Expected MockExit exception")
-                except MockExit as e:
-                    # The specific error code could be 0 or 1 depending on implementation
-                    # What's important is that sys.exit was called and the error message is correct
-                    assert "User token" in echo_messages[-1], "Expected error about User token"
+                with pytest.raises(MockExit):
+                    _call_main(user_token=None)
+                assert "User token" in echo_messages[-1]
 
-@patch('teslamate_mqtt2abrp.click.command')
-def test_main_with_docker_secrets_mocked_click(mock_command):
-    """Test main function with Docker secrets using mocked Click"""
-    # Make mock_command return a function that just calls its argument
-    def mock_decorator(f):
-        return f
-    mock_command.return_value = mock_decorator
-    
-    # Reload the module to get the unwrapped function
-    import teslamate_mqtt2abrp
-    importlib.reload(teslamate_mqtt2abrp)
-    
-    with patch('teslamate_mqtt2abrp.get_docker_secret', return_value='secret_token') as mock_get_docker_secret:
-        with patch('teslamate_mqtt2abrp.TeslaMateABRP') as mock_teslamate_abrp:
+def test_main_uses_docker_secrets():
+    """main() reads the user token (and MQTT password) from Docker secrets."""
+    with patch('teslamate_mqtt2abrp.get_docker_secret', return_value='secret_token') as mock_secret:
+        with patch('teslamate_mqtt2abrp.TeslaMateABRP') as mock_abrp:
             with patch('sys.exit'):
-                # Call without token (should get from Docker secret)
-                teslamate_mqtt2abrp.main(
-                    user_token=None,
-                    car_number='1',
-                    mqtt_server='test_server',
-                    mqtt_username=None,
-                    mqtt_password=None,
-                    mqtt_port=None,
-                    car_model=None,
-                    status_topic=None,
-                    debug=False,
-                    use_auth=True,  # Enable auth but don't provide password
-                    use_tls=False,
-                    skip_location=False,
-                    verify_cert=True,
-                    refresh_driving=None,
-                    refresh_charging=None,
-                    refresh_parked=None
-                )
-                
-                # Check Docker secret was used for token
-                mock_get_docker_secret.assert_any_call('USER_TOKEN')
-                
-                # Check Docker secret was used for password
-                mock_get_docker_secret.assert_any_call('MQTT_PASSWORD')
-                
-                # Check TeslaMateABRP was initialized with the secret token
-                mock_teslamate_abrp.assert_called_once()
-                args, kwargs = mock_teslamate_abrp.call_args
-                config = args[0]
-                assert config["USERTOKEN"] == "secret_token"
-    
-    # Reload the module back to normal after test
-    importlib.reload(teslamate_mqtt2abrp)
+                _call_main(user_token=None, use_auth=True)
+    mock_secret.assert_any_call('USER_TOKEN')
+    mock_secret.assert_any_call('MQTT_PASSWORD')
+    config = mock_abrp.call_args[0][0]
+    assert config['USERTOKEN'] == 'secret_token'
 
-@patch('teslamate_mqtt2abrp.click.command')
-def test_main_run_exceptions_with_click_mock(mock_command):
-    """Test main function exception handling using mocked Click"""
-    # Make mock_command return a function that just calls its argument
-    def mock_decorator(f):
-        return f
-    mock_command.return_value = mock_decorator
-    
-    # Reload the module to get the unwrapped function
-    import teslamate_mqtt2abrp
-    importlib.reload(teslamate_mqtt2abrp)
-    
-    # Test with KeyboardInterrupt
-    with patch('teslamate_mqtt2abrp.TeslaMateABRP') as mock_teslamate_abrp:
-        mock_teslamate_abrp.return_value.run.side_effect = KeyboardInterrupt()
-        
-        with patch('sys.exit') as mock_exit:
-            teslamate_mqtt2abrp.main(
-                user_token='test_token',
-                car_number='1',
-                mqtt_server='test_server',
-                mqtt_username=None,
-                mqtt_password=None,
-                mqtt_port=None,
-                car_model=None,
-                status_topic=None,
-                debug=False,
-                use_auth=False,
-                use_tls=False,
-                skip_location=False,
-                verify_cert=True,
-                refresh_driving=None,
-                refresh_charging=None,
-                refresh_parked=None
-            )
-            
-            # Should exit cleanly with code 0
+def test_main_run_exceptions():
+    """main() exits 0 on KeyboardInterrupt and 1 on any other exception."""
+    with patch('teslamate_mqtt2abrp.get_docker_secret', return_value=None):
+        with patch('teslamate_mqtt2abrp.TeslaMateABRP') as mock_abrp:
+            mock_abrp.return_value.run.side_effect = KeyboardInterrupt()
+            with patch('sys.exit') as mock_exit:
+                _call_main()
             mock_exit.assert_called_once_with(0)
-    
-    # Test with general exception
-    with patch('teslamate_mqtt2abrp.TeslaMateABRP') as mock_teslamate_abrp:
-        mock_teslamate_abrp.return_value.run.side_effect = Exception("Test error")
-        
-        with patch('sys.exit') as mock_exit:
-            teslamate_mqtt2abrp.main(
-                user_token='test_token',
-                car_number='1',
-                mqtt_server='test_server',
-                mqtt_username=None,
-                mqtt_password=None,
-                mqtt_port=None,
-                car_model=None,
-                status_topic=None,
-                debug=False,
-                use_auth=False,
-                use_tls=False,
-                skip_location=False,
-                verify_cert=True,
-                refresh_driving=None,
-                refresh_charging=None,
-                refresh_parked=None
-            )
-            
-            # Should exit with error code 1
+
+        with patch('teslamate_mqtt2abrp.TeslaMateABRP') as mock_abrp:
+            mock_abrp.return_value.run.side_effect = Exception("Test error")
+            with patch('sys.exit') as mock_exit:
+                _call_main()
             mock_exit.assert_called_once_with(1)
-    
-    # Reload the module back to normal after test
-    importlib.reload(teslamate_mqtt2abrp)
 
 def test_standalone_get_docker_secret():
     """Test standalone get_docker_secret function"""
@@ -899,8 +703,8 @@ def test_setup_mqtt_client_comprehensive(mock_args):
         instance = mock_client.return_value
         
         # Create TeslaMateABRP instance
-        abrp = TeslaMateABRP(port_args)
-        
+        TeslaMateABRP(port_args)
+
         # Check port was converted to int
         instance.connect.assert_called_once_with(port_args["MQTTSERVER"], 1883)
     
@@ -912,8 +716,8 @@ def test_setup_mqtt_client_comprehensive(mock_args):
         instance = mock_client.return_value
         
         # Create TeslaMateABRP instance
-        abrp = TeslaMateABRP(invalid_port_args)
-        
+        TeslaMateABRP(invalid_port_args)
+
         # Check default port was used
         instance.connect.assert_called_once_with(invalid_port_args["MQTTSERVER"], DEFAULT_MQTT_PORT)
     
@@ -925,8 +729,8 @@ def test_setup_mqtt_client_comprehensive(mock_args):
         instance = mock_client.return_value
         
         # Create TeslaMateABRP instance
-        abrp = TeslaMateABRP(none_port_args)
-        
+        TeslaMateABRP(none_port_args)
+
         # Check default port was used
         instance.connect.assert_called_once_with(none_port_args["MQTTSERVER"], DEFAULT_MQTT_PORT)
     
@@ -939,8 +743,8 @@ def test_setup_mqtt_client_comprehensive(mock_args):
         instance = mock_client.return_value
         
         # Create TeslaMateABRP instance
-        abrp = TeslaMateABRP(username_args)
-        
+        TeslaMateABRP(username_args)
+
         # Check username was set without password
         instance.username_pw_set.assert_called_once_with("user")
 
@@ -1066,8 +870,6 @@ def test_update_abrp_comprehensive(teslamate_abrp):
 
 def test_update_abrp_with_base_topic(teslamate_abrp_with_topic):
     """Test update_abrp with base_topic set"""
-    import requests
-    
     # Test successful update
     with patch('requests.post') as mock_post:
         mock_response = MagicMock()
@@ -1301,14 +1103,21 @@ def test_update_timely_exits_on_fatal_error(teslamate_abrp):
         with pytest.raises(SystemExit):
             teslamate_abrp.update_timely()
 
-def test_on_connect_failure_sets_fatal_error_without_exit(teslamate_abrp):
-    """on_connect must NOT call sys.exit (wrong thread); it records fatal_error
-    and does not subscribe."""
+@pytest.mark.parametrize("reason_code", [2, 3, 4, 5])
+def test_on_connect_failure_sets_fatal_error_without_exit(teslamate_abrp, reason_code):
+    """For every connection-failure reason code, on_connect must NOT call
+    sys.exit (wrong thread); it records fatal_error and does not subscribe."""
     client_mock = MagicMock()
-    # reason_code 5 == "not authorised"
-    teslamate_abrp.on_connect(client_mock, None, None, 5, None)
+    teslamate_abrp.on_connect(client_mock, None, None, reason_code, None)
     assert teslamate_abrp.fatal_error is not None
     client_mock.subscribe.assert_not_called()
+
+def test_on_connect_success_subscribes(teslamate_abrp):
+    """reason_code 0 subscribes and leaves fatal_error unset."""
+    client_mock = MagicMock()
+    teslamate_abrp.on_connect(client_mock, None, None, 0, None)
+    assert teslamate_abrp.fatal_error is None
+    client_mock.subscribe.assert_called_once_with("teslamate/cars/1/#")
 
 def test_parse_bool_env_fail_secure(monkeypatch):
     """parse_bool_env returns the default for unset/invalid values and parses
@@ -1433,44 +1242,40 @@ def test_publish_to_mqtt_skips_unchanged(teslamate_abrp_with_topic):
             "tesla/abrp/status/b", payload=3, qos=1, retain=True
         )
 
-@patch('teslamate_mqtt2abrp.click.command')
-def test_main_passes_refresh_rates_to_config(mock_command):
+def test_main_passes_refresh_rates_to_config():
     """main() should forward the refresh-rate options into the config dict"""
-    def mock_decorator(f):
-        return f
-    mock_command.return_value = mock_decorator
+    with patch('teslamate_mqtt2abrp.TeslaMateABRP') as mock_abrp:
+        with patch('teslamate_mqtt2abrp.get_docker_secret', return_value=None):
+            with patch('sys.exit'):
+                _call_main(refresh_driving=5, refresh_charging=10, refresh_parked=60)
+    config = mock_abrp.call_args[0][0]
+    assert config['REFRESH_RATE_DRIVING'] == 5
+    assert config['REFRESH_RATE_CHARGING'] == 10
+    assert config['REFRESH_RATE_PARKED'] == 60
 
-    import teslamate_mqtt2abrp
-    importlib.reload(teslamate_mqtt2abrp)
-    try:
-        with patch('teslamate_mqtt2abrp.TeslaMateABRP') as mock_abrp:
-            with patch('teslamate_mqtt2abrp.get_docker_secret', return_value=None):
-                with patch('sys.exit'):
-                    teslamate_mqtt2abrp.main(
-                        user_token='test_token',
-                        car_number='1',
-                        mqtt_server='test_server',
-                        mqtt_username=None,
-                        mqtt_password=None,
-                        mqtt_port=None,
-                        car_model=None,
-                        status_topic=None,
-                        debug=False,
-                        use_auth=False,
-                        use_tls=False,
-                        skip_location=False,
-                        verify_cert=True,
-                        refresh_driving=5,
-                        refresh_charging=10,
-                        refresh_parked=60,
-                    )
-                    args, _ = mock_abrp.call_args
-                    config = args[0]
-                    assert config['REFRESH_RATE_DRIVING'] == 5
-                    assert config['REFRESH_RATE_CHARGING'] == 10
-                    assert config['REFRESH_RATE_PARKED'] == 60
-    finally:
-        importlib.reload(teslamate_mqtt2abrp)
+def test_main_api_key_override_from_env(monkeypatch):
+    """ABRP_API_KEY env var flows into config['APIKEY'] (used as the app key)."""
+    monkeypatch.setenv('ABRP_API_KEY', 'custom-app-key')
+    with patch('teslamate_mqtt2abrp.TeslaMateABRP') as mock_abrp:
+        with patch('teslamate_mqtt2abrp.get_docker_secret', return_value=None):
+            with patch('sys.exit'):
+                _call_main()
+    config = mock_abrp.call_args[0][0]
+    assert config['APIKEY'] == 'custom-app-key'
+
+def test_api_key_defaults_to_shared(mock_args):
+    """Without an override, the instance uses the shared default APIKEY."""
+    with patch('teslamate_mqtt2abrp.TeslaMateABRP.setup_mqtt_client'):
+        abrp = TeslaMateABRP(mock_args)
+    assert abrp.api_key == APIKEY
+
+def test_api_key_uses_config_override(mock_args):
+    """A configured APIKEY overrides the shared default on the instance."""
+    cfg = mock_args.copy()
+    cfg['APIKEY'] = 'custom-app-key'
+    with patch('teslamate_mqtt2abrp.TeslaMateABRP.setup_mqtt_client'):
+        abrp = TeslaMateABRP(cfg)
+    assert abrp.api_key == 'custom-app-key'
 
 if __name__ == "__main__":
     pytest.main()
