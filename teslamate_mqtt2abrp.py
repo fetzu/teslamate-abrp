@@ -8,23 +8,53 @@ import sys
 import datetime
 import calendar
 import os
+import re
+import math
+import threading
 import logging
 import requests
 import json
 import paho.mqtt.client as mqtt
 import click
-from time import sleep
+from time import sleep, monotonic
 from typing import Dict, Any, Optional
 
 ## [ CONFIGURATION ]
+# Shared ABRP "Generic" application key. This is NOT a per-user secret - it
+# identifies the integration, and every user supplies their own USER_TOKEN.
+# It can be overridden at deploy time via the ABRP_API_KEY env var or a Docker
+# secret of the same name; the literal below is the default fallback.
 APIKEY = "d49234a5-2553-454e-8321-3fe30b49aa64"
 DEFAULT_MQTT_PORT = 1883
 DEFAULT_CAR_NUMBER = 1
 
-# Refresh rates (in seconds) - used as fallback defaults when not configured
-DEFAULT_REFRESH_RATE_DRIVING = 1
+# Refresh rates (in seconds) - used as fallback defaults when not configured.
+# Driving default is 2.5s: ABRP recommends a data point roughly every 5s and says
+# faster updates don't materially improve its predictions, so 2.5s stays
+# responsive while cutting redundant POSTs vs the old 1s default. Fractional
+# values are supported (see the wall-clock scheduler in update_timely).
+DEFAULT_REFRESH_RATE_DRIVING = 2.5
 DEFAULT_REFRESH_RATE_CHARGING = 6
 DEFAULT_REFRESH_RATE_PARKED = 30
+
+# The update loop polls on this fixed tick (seconds) and decides what to send
+# from a wall-clock timer, so any fractional rate >= MIN_REFRESH_RATE works.
+# Smaller tick => finer rate granularity and faster state-change detection, at
+# the cost of more (negligible) idle wakeups.
+REFRESH_TICK = 0.5
+# Lower bound for any refresh rate (seconds). ABRP's practical floor is ~1s; this
+# also keeps a misconfigured value from hammering the loop and the ABRP API.
+MIN_REFRESH_RATE = 1.0
+
+# Car states treated as parked/idle for scheduling and housekeeping.
+PARKED_STATES = ["parked", "online", "suspended", "asleep", "offline"]
+# Human-readable labels for the "updating every Ns" log line.
+STATE_LABELS = {"charging": "charging", "driving": "driving"}
+
+# Seconds to wait at startup for the model/trim_badging messages before giving
+# up on automatic car-model detection (used as a fallback; detection returns as
+# soon as both arrive).
+MODEL_DETECTION_TIMEOUT = 10
 
 # Tesla model ID mapping
 MODEL_MAPPINGS = {
@@ -42,22 +72,56 @@ MODEL_MAPPINGS = {
     }
 }
 
-def validate_refresh_rate(value: Any, default: int, name: str) -> int:
+def validate_refresh_rate(value: Any, default: float, name: str) -> float:
     """Validate a refresh rate, falling back to the default for missing/invalid values.
 
-    Refresh rates must be whole positive seconds (the update loop uses them as a
-    modulo divisor, so 0 or negative values are rejected).
+    Rates are seconds and may be fractional (the update loop schedules on a
+    wall-clock timer). A value must be finite and at least MIN_REFRESH_RATE;
+    anything smaller (including 0/negative) or non-numeric falls back to default.
     """
     if value is None:
         return default
     try:
-        rate = int(value)
-        if rate < 1:
+        rate = float(value)
+        if not math.isfinite(rate) or rate < MIN_REFRESH_RATE:
             raise ValueError
         return rate
     except (ValueError, TypeError):
-        logging.warning(f"Invalid {name} refresh rate provided: {value}. Using default: {default}s.")
+        logging.warning(
+            f"Invalid {name} refresh rate provided: {value}. "
+            f"Must be a number >= {MIN_REFRESH_RATE}s. Using default: {default}s."
+        )
         return default
+
+
+# Matches a `token=<value>` query-string parameter so the ABRP user token can be
+# stripped out of anything that gets logged or published (e.g. requests/urllib3
+# exception strings embed the full request URL, which carries the token).
+_TOKEN_QS_RE = re.compile(r'(token=)[^&\s]+', re.IGNORECASE)
+
+
+def redact_secrets(text: Any) -> str:
+    """Redact secret query-string values (notably the ABRP user token) from a
+    string before it is logged or published to MQTT."""
+    return _TOKEN_QS_RE.sub(r'\1REDACTED', str(text))
+
+
+def parse_bool_env(name: str, default: bool) -> bool:
+    """Parse a boolean environment variable.
+
+    Unset or unrecognised values fall back to ``default`` (fail-secure for the
+    TLS-verification flag) rather than aborting the program.
+    """
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized in ("1", "true", "yes", "on", "y", "t"):
+        return True
+    if normalized in ("0", "false", "no", "off", "n", "f", ""):
+        return False
+    logging.warning(f"Invalid {name} value: {value!r}. Using default: {default}.")
+    return default
 
 ## [ la CLASSe américaine ]
 class TeslaMateABRP:
@@ -66,6 +130,9 @@ class TeslaMateABRP:
         self.configure_logging()
         self.base_topic = self.config.get("BASETOPIC")
         self.prefix = "_tm2abrp"
+        # ABRP application key: config override (env/Docker secret) or the
+        # shared default. Not a per-user secret (see APIKEY above).
+        self.api_key = self.config.get("APIKEY") or APIKEY
         # Only set state_topic if base_topic is provided
         self.state_topic = f"{self.base_topic}/{self.prefix}_status" if self.base_topic else None
         
@@ -74,6 +141,19 @@ class TeslaMateABRP:
         self.prev_state = ""
         self.charger_phases = 1
         self.has_usable_battery_level = False  # Flag to track if we've received usable_battery_level
+        # Guards self.data: it is mutated by the paho callback thread (on_message)
+        # and read/serialized by the main update loop.
+        self.data_lock = threading.Lock()
+        # Last value published per MQTT key, so unchanged values aren't
+        # republished every cycle (retain=True already holds them on the broker).
+        self.last_published: Dict[str, Any] = {}
+        # Set from the paho callback thread (on_connect) to request a shutdown
+        # that must happen on the main thread.
+        self.fatal_error: Optional[str] = None
+        # Set once both model and trim_badging have been received, so
+        # find_car_model() can return as soon as the data arrives instead of
+        # blocking for a fixed delay.
+        self.model_data_ready = threading.Event()
 
         # Refresh rates (in seconds), validated with fallback to defaults
         self.refresh_rate_driving = validate_refresh_rate(
@@ -118,6 +198,10 @@ class TeslaMateABRP:
             datefmt='%Y-%m-%d %H:%M:%S',
             level=log_level
         )
+        # urllib3 logs the full request URL at DEBUG, which carries the ABRP
+        # user token in the query string. Keep it quiet regardless of app level
+        # so enabling --debug never leaks the token into the logs.
+        logging.getLogger("urllib3").setLevel(logging.WARNING)
         if log_level == logging.DEBUG:
             logging.debug("Logging level set to DEBUG.")
 
@@ -162,6 +246,7 @@ class TeslaMateABRP:
         # Set up callbacks
         self.client.on_connect = self.on_connect
         self.client.on_message = self.on_message
+        self.client.on_disconnect = self.on_disconnect
 
         # Connect to MQTT server with better error handling
         mqtt_port = self.config.get("MQTTPORT", DEFAULT_MQTT_PORT)
@@ -197,23 +282,31 @@ class TeslaMateABRP:
         result_str = mqtt.connack_string(reason_code)
         logging.info(f"MQTT Connection returned result: {result_str} (reason code {reason_code}).")
         
-        # Improved authentication failure detection for both MQTT v3.1.1 and v5
+        # Improved authentication failure detection for both MQTT v3.1.1 and v5.
+        # NOTE: on_connect runs in paho's network-loop thread, so calling
+        # sys.exit() here would only raise SystemExit in that thread and leave
+        # the main update loop spinning forever. Record the fatal reason instead
+        # and let the main thread (update_timely) perform the shutdown.
         if reason_code == 5 or reason_code == 4:  # Auth failure codes
             error_msg = "MQTT Authentication failed. Check your username and password."
             logging.critical(error_msg)
-            sys.exit(error_msg)
+            self.fatal_error = error_msg
+            return
         elif reason_code == 3:  # Server unavailable
             error_msg = "MQTT Broker unavailable. Check if the server is running."
             logging.critical(error_msg)
-            sys.exit(error_msg)
+            self.fatal_error = error_msg
+            return
         elif reason_code == 2:  # Client identifier rejected
             error_msg = "MQTT Client ID rejected. Try using a different client ID."
             logging.critical(error_msg)
-            sys.exit(error_msg)
+            self.fatal_error = error_msg
+            return
         elif reason_code != 0:
             error_msg = f"Could not connect to MQTT server. Reason: {result_str} (code {reason_code})"
             logging.critical(error_msg)
-            sys.exit(error_msg)
+            self.fatal_error = error_msg
+            return
         
         logging.debug("MQTT connection successful, subscribing to topics...")
         client.subscribe(f"teslamate/cars/{self.config.get('CARNUMBER')}/#")
@@ -224,12 +317,27 @@ class TeslaMateABRP:
             client.publish(self.state_topic, payload="online", qos=2, retain=True)
             logging.debug(f"Published 'online' status to {self.state_topic}")
 
+    def on_disconnect(self, client, userdata, disconnect_flags, reason_code, properties):
+        # paho's background network loop auto-reconnects; until it does,
+        # update_abrp() skips sending so stale telemetry isn't reported as live.
+        # A clean shutdown (reason_code 0) is logged at a lower level.
+        if reason_code == 0:
+            logging.debug("MQTT client disconnected cleanly.")
+        else:
+            logging.warning(
+                f"MQTT client disconnected unexpectedly (reason code {reason_code}). "
+                f"Pausing ABRP updates until the connection is restored."
+            )
+
     def on_message(self, client, userdata, message):
         try:
             payload = str(message.payload.decode("utf-8"))
             topic_name = message.topic.split('/')[-1]
-            
-            self.process_message(topic_name, payload)
+
+            # Hold the data lock for the whole message: process_message and
+            # handle_state_change mutate self.data, which the main loop reads.
+            with self.data_lock:
+                self.process_message(topic_name, payload)
 
         except Exception as e:
             logging.critical(
@@ -246,8 +354,10 @@ class TeslaMateABRP:
 
         if topic == "model":
             self.data["model"] = payload
+            self._maybe_signal_model_ready()
         elif topic == "trim_badging":
             self.data["trim_badging"] = payload
+            self._maybe_signal_model_ready()
         elif topic == "latitude" and not self.config.get("SKIPLOCATION"):
             try:
                 self.data["lat"] = float(payload)
@@ -270,8 +380,13 @@ class TeslaMateABRP:
                 pass
         elif topic == "power":
             try:
-                self.data["power"] = float(payload)
-                if self.data["is_charging"] and float(payload) < -11:
+                value = float(payload)
+                # Reject non-finite values (nan/inf): json(allow_nan=False) would
+                # otherwise reject the whole payload and break every later POST.
+                if not math.isfinite(value):
+                    raise ValueError("non-finite power")
+                self.data["power"] = value
+                if self.data["is_charging"] and value < -11:
                     self.data["is_dcfc"] = True
             except ValueError:
                 pass
@@ -281,6 +396,11 @@ class TeslaMateABRP:
                     self.data["is_charging"] = True
                     if int(payload) > 11:
                         self.data["is_dcfc"] = True
+                elif payload and int(payload) == 0:
+                    # Charger power dropped to 0: clear the charge flags so a
+                    # missed 'state' transition can't latch stale charging flags.
+                    self.data["is_charging"] = False
+                    self.data["is_dcfc"] = False
             except ValueError:
                 pass
         elif topic == "heading":
@@ -363,8 +483,12 @@ class TeslaMateABRP:
 
         # Calculate accurate power on AC charging
         if self.data["is_charging"] and not self.data["is_dcfc"] and "voltage" in self.data and "current" in self.data:
-            self.data["power"] = (float(self.data["current"] * self.data["voltage"] * self.charger_phases) 
-                             / 1000.0 * -1)
+            # Guard against OverflowError from absurdly large (malformed) values.
+            try:
+                self.data["power"] = (float(self.data["current"] * self.data["voltage"] * self.charger_phases)
+                                      / 1000.0 * -1)
+            except (OverflowError, ValueError):
+                pass
 
     def handle_state_change(self, state: str):
         """Update car state and relevant data fields."""
@@ -376,18 +500,25 @@ class TeslaMateABRP:
             self.data["is_parked"] = True
             self.data["is_charging"] = True
             self.data["is_dcfc"] = False
-        elif state == "supercharging":
-            self.data["is_parked"] = True
-            self.data["is_charging"] = True
-            self.data["is_dcfc"] = True
         elif state in ["online", "suspended", "asleep", "offline"]:
             self.data["is_parked"] = True
             self.data["is_charging"] = False
             self.data["is_dcfc"] = False
 
+    def _maybe_signal_model_ready(self):
+        """Signal find_car_model() once both model and trim_badging are known."""
+        if self.data["model"] and self.data["trim_badging"]:
+            self.model_data_ready.set()
+
     def find_car_model(self):
         """Determine car model from TeslaMate data."""
-        sleep(10)  # Wait to receive initial messages
+        # Wait for the model + trim_badging messages (set by process_message),
+        # returning as soon as both arrive; fall back to the timeout otherwise.
+        if not self.model_data_ready.wait(timeout=MODEL_DETECTION_TIMEOUT):
+            logging.debug(
+                "Timed out waiting for model/trim_badging; "
+                "proceeding with whatever data has arrived."
+            )
 
         # Handle Model 3 and Y using mapping dictionary
         if self.data["model"] in MODEL_MAPPINGS and self.data["trim_badging"] in MODEL_MAPPINGS[self.data["model"]]:
@@ -418,7 +549,17 @@ class TeslaMateABRP:
             return
             
         logging.debug(f"Publishing to MQTT: {data_object}")
-        for key, value in data_object.items():
+        # Snapshot under the lock so a concurrent mutation of self.data on the
+        # MQTT callback thread can't raise "dictionary changed size during
+        # iteration" here on the main thread.
+        with self.data_lock:
+            items = list(data_object.items())
+        for key, value in items:
+            # Skip republishing unchanged values: retain=True already keeps the
+            # last value on the broker, so this only drops redundant traffic
+            # (e.g. while parked only `utc` changes, not all ~21 fields).
+            if key in self.last_published and self.last_published[key] == value:
+                continue
             try:
                 self.client.publish(
                     f"{self.base_topic}/{key}",
@@ -426,17 +567,36 @@ class TeslaMateABRP:
                     qos=1,
                     retain=True
                 )
+                self.last_published[key] = value
             except Exception as e:
                 logging.error(f"Failed to publish to MQTT: {e}")
 
     def update_abrp(self):
         """Send data to ABRP API."""
+        # Don't POST while the MQTT link is down: self.state/self.data are frozen
+        # at their last-known values and would be reported to ABRP as if live.
+        # paho's background loop auto-reconnects (see on_disconnect).
+        if not self.client.is_connected():
+            logging.debug("MQTT not connected; skipping ABRP update to avoid sending stale data.")
+            return
         try:
-            headers = {"Authorization": f"APIKEY {APIKEY}"}
-            body = {"tlm": self.data}
+            headers = {"Authorization": f"APIKEY {self.api_key}"}
+            # Snapshot under the lock so the payload can't change mid-serialize.
+            # Stamp the send time here (P-3) rather than on every idle loop tick.
+            with self.data_lock:
+                self.data["utc"] = calendar.timegm(datetime.datetime.now(datetime.UTC).timetuple())
+                snapshot = dict(self.data)
+            # Defense-in-depth: drop any non-finite numbers (nan/inf) so json
+            # (allow_nan=False) can't reject the whole payload and break every
+            # subsequent POST until the offending value happens to change.
+            snapshot = {
+                k: v for k, v in snapshot.items()
+                if not (isinstance(v, float) and not math.isfinite(v))
+            }
+            body = {"tlm": snapshot}
             response = requests.post(
-                f"https://api.iternio.com/1/tlm/send?token={self.config.get('USERTOKEN')}", 
-                headers=headers, 
+                f"https://api.iternio.com/1/tlm/send?token={self.config.get('USERTOKEN')}",
+                headers=headers,
                 json=body,
                 timeout=10
             )
@@ -447,11 +607,17 @@ class TeslaMateABRP:
                     self.publish_to_mqtt({f"{self.prefix}_post_last_status": resp["status"]})
                 
                 if resp["status"] != "ok":
-                    logging.error(f"Error, response from the ABRP API: {response.text}.")
+                    logging.error(f"Error, response from the ABRP API: {redact_secrets(response.text)}.")
                     if self.base_topic:
                         self.publish_to_mqtt({f"{self.prefix}_post_last_error": self.nice_now()})
                 else:
-                    logging.info(f"Data object successfully sent: {self.data}")
+                    # Keep an INFO heartbeat without PII; the full payload
+                    # (lat/lon/odometer) is only emitted at DEBUG.
+                    logging.info(
+                        f"Data sent to ABRP (soc={self.data.get('soc')}%, "
+                        f"state={self.state or 'unknown'})."
+                    )
+                    logging.debug(f"Full data object sent: {self.data}")
                     if self.base_topic:
                         self.publish_to_mqtt({f"{self.prefix}_post_last_success": self.nice_now()})
             except (json.JSONDecodeError, KeyError) as e:
@@ -460,77 +626,94 @@ class TeslaMateABRP:
                     self.publish_to_mqtt({f"{self.prefix}_post_last_error": self.nice_now()})
 
         except requests.RequestException as ex:
-            logging.critical(f"Failed to connect to ABRP API: {ex}")
+            logging.critical(f"Failed to connect to ABRP API: {redact_secrets(ex)}")
             if self.base_topic:
-                self.publish_to_mqtt({f"{self.prefix}_post_exception": str(ex)})
+                self.publish_to_mqtt({f"{self.prefix}_post_exception": redact_secrets(ex)})
                 self.publish_to_mqtt({f"{self.prefix}_post_last_exception": self.nice_now()})
         except Exception as ex:
             logging.critical(
-                f"Unexpected exception while POSTing to ABRP API: {type(ex).__name__} - {ex}"
+                f"Unexpected exception while POSTing to ABRP API: {type(ex).__name__} - {redact_secrets(ex)}"
             )
             if self.base_topic:
-                self.publish_to_mqtt({f"{self.prefix}_post_exception": str(ex)})
+                self.publish_to_mqtt({f"{self.prefix}_post_exception": redact_secrets(ex)})
                 self.publish_to_mqtt({f"{self.prefix}_post_last_exception": self.nice_now()})
 
     def nice_now(self) -> str:
         """Return a formatted timestamp."""
         return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d %H:%M:%S")
 
+    def _refresh_rate_for_state(self, state: str) -> Optional[float]:
+        """Return the configured refresh rate (seconds) for a car state, or None
+        if the state is unknown and shouldn't trigger any ABRP update."""
+        if state in PARKED_STATES:
+            return self.refresh_rate_parked
+        if state == "charging":
+            return self.refresh_rate_charging
+        if state == "driving":
+            return self.refresh_rate_driving
+        return None
+
     def update_timely(self):
-        """Update ABRP based on car state and timers."""
-        i = -1
+        """Update ABRP based on car state and per-state refresh timers.
+
+        Scheduling is wall-clock based (monotonic): a send fires once at least
+        `rate` seconds have elapsed since the previous one. This supports
+        fractional-second rates, never accumulates drift (each interval is
+        measured from the last send time, not a counter), and polls on a small
+        fixed tick so state changes - set from the MQTT callback thread - are
+        detected within one tick.
+        """
+        last_send = None  # monotonic time of the last send; None -> send now
         while True:
-            i += 1
-            sleep(1)  # Base refresh rate
+            # A fatal MQTT failure is flagged from the callback thread; exit the
+            # process from the main thread so it doesn't spin here forever and
+            # the container runtime can apply its restart policy.
+            if self.fatal_error:
+                raise SystemExit(self.fatal_error)
+            sleep(REFRESH_TICK)
 
-            # Reset counter when state changes so the first update fires promptly
-            # (0 % rate == 0 for any rate, regardless of the configured values)
-            if self.state != self.prev_state:
-                i = 0
-                logging.debug(f"Current car state changed to: {self.state}.")
+            # Snapshot the state once so it can't change mid-iteration.
+            state = self.state
+            state_changed = state != self.prev_state
+            if state_changed:
+                last_send = None  # fire promptly on a state change
+                logging.debug(f"Current car state changed to: {state}.")
 
-            # Update UTC timestamp
-            self.data["utc"] = calendar.timegm(datetime.datetime.now(datetime.UTC).timetuple())
+            rate = self._refresh_rate_for_state(state)
+            if rate is None:
+                # Log once per entry into an unknown state (not every tick).
+                if state and state_changed:
+                    logging.error(f"Car is in unknown state ({state}), not sending any update to ABRP.")
+                self.prev_state = state
+                continue
 
-            # Handle different car states
-            if self.state in ["parked", "online", "suspended", "asleep", "offline"]:
-                self.handle_parked_state(i)
-                if i % self.refresh_rate_parked == 0 or i > self.refresh_rate_parked:
-                    if self.prev_state != self.state:
-                        logging.info(f"Car is sleeping, updating every {self.refresh_rate_parked}s.")
-                    self.update_abrp()
-                    if self.base_topic:
-                        self.publish_to_mqtt(self.data)
-                    i = 0
-            elif self.state == "charging":
-                if i % self.refresh_rate_charging == 0:
-                    if self.prev_state != self.state:
-                        logging.info(f"Car is charging, updating every {self.refresh_rate_charging}s.")
-                    self.update_abrp()
-                    if self.base_topic:
-                        self.publish_to_mqtt(self.data)
-            elif self.state == "driving":
-                if i % self.refresh_rate_driving == 0:
-                    if self.prev_state != self.state:
-                        logging.info(f"Car is driving, updating every {self.refresh_rate_driving}s.")
-                    self.update_abrp()
-                    if self.base_topic:
-                        self.publish_to_mqtt(self.data)
-            elif self.state:  # Any other non-empty state
-                logging.error(f"Car is in unknown state ({self.state}), not sending any update to ABRP.")
-                
-            self.prev_state = self.state
+            # Parked/idle housekeeping runs every tick (cheap; zeroes power/speed).
+            if state in PARKED_STATES:
+                self.handle_parked_state()
 
-    def handle_parked_state(self, counter: int):
+            now = monotonic()
+            if last_send is None or (now - last_send) >= rate:
+                if state_changed:
+                    label = STATE_LABELS.get(state, "sleeping")
+                    logging.info(f"Car is {label}, updating every {rate}s.")
+                self.update_abrp()
+                if self.base_topic:
+                    self.publish_to_mqtt(self.data)
+                last_send = now
+
+            self.prev_state = state
+
+    def handle_parked_state(self):
         """Handle data updates when car is parked."""
-        # Reset power and speed if they're not zero
-        if self.data["power"] != 0:
-            self.data["power"] = 0.0
-        if self.data["speed"] > 0:
-            self.data["speed"] = 0
-        # Remove kwh_charged field when not charging
-        if "kwh_charged" in self.data:
-            self.data.pop("kwh_charged", None)
+        with self.data_lock:
+            # Reset power and speed if they're not zero
+            if self.data["power"] != 0:
+                self.data["power"] = 0.0
+            if self.data["speed"] > 0:
+                self.data["speed"] = 0
+            # Remove kwh_charged field when not charging
+            if "kwh_charged" in self.data:
+                self.data.pop("kwh_charged", None)
  
     def run(self):
         """Main entry point to run the application."""
@@ -583,16 +766,17 @@ def get_docker_secret(secret_name: str) -> Optional[str]:
              help='Use authentication (username and password) to connect to MQTT server')
 @click.option('-s', '--use-tls', 'use_tls', is_flag=True, envvar='MQTT_TLS',
              help='Use TLS to connect to MQTT server')
-@click.option('--verify-cert', 'verify_cert', is_flag=True, envvar='MQTT_VERIFY_CERT', default=True,
-             help='Verify TLS certificates (default: True)')
+@click.option('--verify-cert/--no-verify-cert', 'verify_cert', default=None,
+             help='Verify MQTT TLS certificates (default: enabled). '
+                  'Env var MQTT_VERIFY_CERT also accepted; invalid values fall back to enabled.')
 @click.option('-x', '--skip-location', 'skip_location', is_flag=True, envvar='SKIP_LOCATION',
              help="Don't send LAT and LON to ABRP")
-@click.option('--refresh-driving', 'refresh_driving', type=int, envvar='REFRESH_RATE_DRIVING',
-             help=f'Update interval in seconds while driving (default: {DEFAULT_REFRESH_RATE_DRIVING})')
-@click.option('--refresh-charging', 'refresh_charging', type=int, envvar='REFRESH_RATE_CHARGING',
-             help=f'Update interval in seconds while charging (default: {DEFAULT_REFRESH_RATE_CHARGING})')
-@click.option('--refresh-parked', 'refresh_parked', type=int, envvar='REFRESH_RATE_PARKED',
-             help=f'Update interval in seconds while parked/asleep (default: {DEFAULT_REFRESH_RATE_PARKED})')
+@click.option('--refresh-driving', 'refresh_driving', type=float, envvar='REFRESH_RATE_DRIVING',
+             help=f'Update interval in seconds while driving (default: {DEFAULT_REFRESH_RATE_DRIVING}, min: {MIN_REFRESH_RATE})')
+@click.option('--refresh-charging', 'refresh_charging', type=float, envvar='REFRESH_RATE_CHARGING',
+             help=f'Update interval in seconds while charging (default: {DEFAULT_REFRESH_RATE_CHARGING}, min: {MIN_REFRESH_RATE})')
+@click.option('--refresh-parked', 'refresh_parked', type=float, envvar='REFRESH_RATE_PARKED',
+             help=f'Update interval in seconds while parked/asleep (default: {DEFAULT_REFRESH_RATE_PARKED}, min: {MIN_REFRESH_RATE})')
 
 def main(user_token, car_number, mqtt_server, mqtt_username, mqtt_password, mqtt_port,
          car_model, status_topic, debug, use_auth, use_tls, verify_cert, skip_location,
@@ -665,6 +849,10 @@ def main(user_token, car_number, mqtt_server, mqtt_username, mqtt_password, mqtt
     config["MQTTPASSWORD"] = mqtt_password if mqtt_username else None
     
     config["MQTTTLS"] = use_tls
+    # The CLI flag (--verify-cert/--no-verify-cert) wins when given; otherwise
+    # fall back to the env var, parsed fail-secure (invalid -> verification on).
+    if verify_cert is None:
+        verify_cert = parse_bool_env('MQTT_VERIFY_CERT', True)
     config["MQTT_VERIFY_CERT"] = verify_cert
     config["CARMODEL"] = car_model
     config["BASETOPIC"] = status_topic
@@ -675,6 +863,12 @@ def main(user_token, car_number, mqtt_server, mqtt_username, mqtt_password, mqtt
     config["REFRESH_RATE_DRIVING"] = refresh_driving
     config["REFRESH_RATE_CHARGING"] = refresh_charging
     config["REFRESH_RATE_PARKED"] = refresh_parked
+
+    # Optional ABRP application-key override (Docker secret or env var); falls
+    # back to the shared default inside TeslaMateABRP. Not a per-user secret.
+    config["APIKEY"] = get_docker_secret('ABRP_API_KEY') or os.environ.get('ABRP_API_KEY')
+    if config["APIKEY"]:
+        logging.debug("Using ABRP_API_KEY override (Docker secret or env var)")
 
     # Enhanced credential logging for troubleshooting
     if config["MQTTUSERNAME"]:

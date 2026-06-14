@@ -18,7 +18,6 @@ jobs:
     # Only needs read permission for checking out code and running tests
     permissions:
       contents: read
-    continue-on-error: true
     steps:
       - name: Check out the repo
         uses: actions/checkout@v6
@@ -59,7 +58,7 @@ jobs:
           fail_ci_if_error: false
   build_and_push:
     name: Build and Push Alpha Docker image
-    # needs: test
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       packages: write
@@ -115,8 +114,7 @@ jobs:
           exit-code: '1'
           ignore-unfixed: true
           severity: 'CRITICAL,HIGH'
-        continue-on-error: true
-      
+
       - name: Build and push Docker images
         uses: docker/build-push-action@v7
         with:

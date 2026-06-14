@@ -62,7 +62,7 @@ ABRP:
     # - STATUS_TOPIC=teslamate-abrp
     # - SKIP_LOCATION=True
     # - TM2ABRP_DEBUG=True
-    # - REFRESH_RATE_DRIVING=1
+    # - REFRESH_RATE_DRIVING=2.5
     # - REFRESH_RATE_CHARGING=6
     # - REFRESH_RATE_PARKED=30
 ```
@@ -139,12 +139,14 @@ secrets:
 | MQTT_USERNAME | MQTT username | - | No |
 | MQTT_PASSWORD | MQTT password | - | No |
 | MQTT_TLS | Use TLS for MQTT connection | False | No |
+| MQTT_VERIFY_CERT | Verify the broker's TLS certificate (only applies with MQTT_TLS). CLI: `--verify-cert`/`--no-verify-cert`. Invalid values fall back to enabled | True | No |
 | STATUS_TOPIC | Topic to publish status messages | - | No |
 | SKIP_LOCATION | Don't send location data to ABRP | False | No |
 | TM2ABRP_DEBUG | Enable debug logging | False | No |
-| REFRESH_RATE_DRIVING | Update interval (seconds) while driving | 1 | No |
+| REFRESH_RATE_DRIVING | Update interval (seconds) while driving; fractional values allowed, min 1 | 2.5 | No |
 | REFRESH_RATE_CHARGING | Update interval (seconds) while charging | 6 | No |
 | REFRESH_RATE_PARKED | Update interval (seconds) while parked/asleep | 30 | No |
+| ABRP_API_KEY | Override the shared ABRP application key (env var or Docker secret). Not a per-user secret | Built-in | No |
 
 ### Car Model Identification
 
@@ -181,9 +183,15 @@ Examples:
 ### Customizing Update Frequencies
 
 The application uses different update rates (in seconds) based on car state, with these defaults:
-- Driving: every 1 second (`REFRESH_RATE_DRIVING`)
+- Driving: every 2.5 seconds (`REFRESH_RATE_DRIVING`)
 - Charging: every 6 seconds (`REFRESH_RATE_CHARGING`)
 - Parked/Asleep: every 30 seconds (`REFRESH_RATE_PARKED`)
+
+ABRP recommends a telemetry point roughly every 5 seconds and advises against
+intervals longer than 30 seconds, so the defaults stay within that window. Faster
+driving updates (e.g. `REFRESH_RATE_DRIVING=1`) are supported but, per ABRP, don't
+materially improve its predictions. Rates may be fractional (e.g. `2.5`) but must
+be at least 1 second; out-of-range or invalid values fall back to the default.
 
 These can be customized via environment variables or the equivalent CLI options
 (`--refresh-driving`, `--refresh-charging`, `--refresh-parked`). Any value left
