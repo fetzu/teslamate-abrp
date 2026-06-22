@@ -4,6 +4,6 @@ paho-mqtt>=2.1.0,<2.2.0
 
 # certifi is intentionally left without an upper bound: it ships CA-certificate
 # data and newer releases should be picked up for security.
-certifi>=2026.5.20
+certifi>=2026.6.17
 # Cap below the next major to avoid an unvetted urllib3 3.0 breaking change.
 urllib3>=2.7.0,<3.0
