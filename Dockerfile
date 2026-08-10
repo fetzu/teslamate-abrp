@@ -21,8 +21,12 @@ RUN apk update && \
 # Copy requirements first to leverage Docker cache
 COPY --chown=toor:toor requirements.txt .
 
-# Install dependencies directly (no virtual environment)
-RUN pip install --no-cache-dir -r requirements.txt
+# Install dependencies directly (no virtual environment), then drop pip itself:
+# it is not needed at runtime, and the libraries it vendors (declared in
+# pip/_vendor/bom.cdx.json) get reported as image vulnerabilities even though
+# no application code can reach them.
+RUN pip install --no-cache-dir -r requirements.txt && \
+    python -m pip uninstall -y pip
 
 # Copy only necessary application code
 COPY --chown=toor:toor teslamate_mqtt2abrp.py .
