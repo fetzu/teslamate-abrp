@@ -1,9 +1,9 @@
 click>=8.5.0,<8.6.0
 requests>=2.34.2,<2.35.0
-paho-mqtt>=2.1.0,<2.2.0
+paho-mqtt>=2.2.0,<2.3.0
 
 # certifi is intentionally left without an upper bound: it ships CA-certificate
 # data and newer releases should be picked up for security.
-certifi>=2026.10.19
+certifi>=2026.10.23
 # Cap below the next major to avoid an unvetted urllib3 3.0 breaking change.
 urllib3>=2.8.0,<3.0
